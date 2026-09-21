@@ -4,7 +4,7 @@
     "xci_name": "BRAM",
     "component_reference": "xilinx.com:ip:blk_mem_gen:8.4",
     "ip_revision": "11",
-    "gen_directory": "../../../../Hardware_ASIP.gen/sources_1/ip/BRAM_1",
+    "gen_directory": "../../../../fpga/dsip.gen/sources_1/ip/BRAM_1",
     "parameters": {
       "component_parameters": {
         "Component_Name": [ { "value": "BRAM", "resolve_type": "user", "usage": "all" } ],
@@ -174,7 +174,7 @@
         "IPCONTEXT": [ { "value": "IP_Flow" } ],
         "IPREVISION": [ { "value": "11" } ],
         "MANAGED": [ { "value": "TRUE" } ],
-        "OUTPUTDIR": [ { "value": "../../../../Hardware_ASIP.gen/sources_1/ip/BRAM_1" } ],
+        "OUTPUTDIR": [ { "value": "../../../../fpga/dsip.gen/sources_1/ip/BRAM_1" } ],
         "SELECTEDSIMMODEL": [ { "value": "" } ],
         "SHAREDDIR": [ { "value": "." } ],
         "SWVERSION": [ { "value": "2025.1" } ],

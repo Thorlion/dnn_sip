@@ -156,20 +156,28 @@ module tb_ASIP;
     // directly visible. At completion, temporarily drive the asynchronous
     // OB read address and save each returned value into waveform-visible regs.
     logic signed [DATA_W_DNN-1:0] ob_wave [0:9];
+    real ob_q8_8 [0:9];
     logic [$clog2(SCRATCHPAD_W)-1:0] ob_probe_addr;
     integer ob_index;
 
-    always @(posedge end_flag) begin
+   always @(posedge end_flag) begin
+        ob_probe_addr = 0;
         force dut.dnn_core.OB_NL_rd_addr = ob_probe_addr;
-
+        #1ns;
+    
         for (ob_index = 0; ob_index < 10; ob_index = ob_index + 1) begin
             ob_probe_addr = ob_index;
-            #1ns; // MEMOB dpo is asynchronous; allow it to settle.
+            #1ns;
+    
             ob_wave[ob_index] = $signed(OB_data_read);
-            $display("[%0t] OB[%0d] = 0x%h (%0d)",
-                     $time, ob_index, ob_wave[ob_index], ob_wave[ob_index]);
+            ob_q8_8[ob_index] = $itor($signed(ob_wave[ob_index]))
+                                / (1 << DECIMAL_BIT);
+    
+            $display("[%0t] OB[%0d] = %0.8f (Q8.8)",
+                     $time, ob_index,
+                     ob_q8_8[ob_index]);
         end
-
+    
         release dut.dnn_core.OB_NL_rd_addr;
     end
 
@@ -212,7 +220,7 @@ module tb_ASIP;
         logic [DATA_W_IF-1:0] temp_data;        // Temporary data to read each data
         initial begin
             integer i;
-            file = $fopen("C:/Users/nguye/Desktop/KTMT/DSIP/old_design/Hardware Design/VivadoProject/Hardware_ASIP_SV_IPandOpt/0973_hex.txt", "r");
+            file = $fopen("../../../../../source/hardware/import/input/0973_hex.txt", "r");
             if (file == 0) begin
                 $display("Input feature file not found!");
                 $finish;
@@ -249,7 +257,7 @@ module tb_ASIP;
         logic [DATA_W_C0W-1:0] temp_data;        // Temporary data to read each data
         initial begin
             integer i;
-            file = $fopen("C:/Users/nguye/Desktop/KTMT/DSIP/KV260/Binary_Instruction_Parameters/binary_parameter/test_model_1/weights_conv0_hex.txt", "r");
+            file = $fopen("../../../../../source/hardware/import/parameter/test_model_1/weights_conv0_hex.txt", "r");
             if (file == 0) begin
                 $display("Conv0 weights file not found!");
                 $finish;
@@ -286,7 +294,7 @@ module tb_ASIP;
         logic [DATA_W_C0B-1:0] temp_data;        // Temporary data to read each data
         initial begin
             integer i;
-            file = $fopen("C:/Users/nguye/Desktop/KTMT/DSIP/KV260/Binary_Instruction_Parameters/binary_parameter/test_model_1/biases_conv0_hex.txt", "r");
+            file = $fopen("../../../../../source/hardware/import/parameter/test_model_1/biases_conv0_hex.txt", "r");
             if (file == 0) begin
                 $display("Conv0 biases file not found!");
                 $finish;
@@ -323,7 +331,7 @@ module tb_ASIP;
         logic [DATA_W_D0W-1:0] temp_data;        // Temporary data to read each data
         initial begin
             integer i;
-            file = $fopen("C:/Users/nguye/Desktop/KTMT/DSIP/KV260/Binary_Instruction_Parameters/binary_parameter/test_model_1/weights_dense0_hex.txt", "r");
+            file = $fopen("../../../../../source/hardware/import/parameter/test_model_1/weights_dense0_hex.txt", "r");
             if (file == 0) begin
                 $display("Dense0 weights file not found!");
                 $finish;
@@ -360,7 +368,7 @@ module tb_ASIP;
         logic [DATA_W_D0B-1:0] temp_data;        // Temporary data to read each data
         initial begin
             integer i;  
-            file = $fopen("C:/Users/nguye/Desktop/KTMT/DSIP/KV260/Binary_Instruction_Parameters/binary_parameter/test_model_1/biases_dense0_hex.txt", "r");
+            file = $fopen("../../../../../source/hardware/import/parameter/test_model_1/biases_dense0_hex.txt", "r");
             if (file == 0) begin
                 $display("Dense0 biases file not found!");  
                 $finish;
@@ -390,8 +398,8 @@ module tb_ASIP;
     // Read Instructions =============================
     logic [31:0] ctrl_inst_temp [0:5000];
     initial begin
-        $readmemb("C:/Users/nguye/Desktop/KTMT/DSIP/KV260/Binary_Instruction_Parameters/binary_instruction/test_model_1/instructions_controller_core.txt",ctrl_inst_temp);
-        $readmemb("C:/Users/nguye/Desktop/KTMT/DSIP/KV260/Binary_Instruction_Parameters/binary_instruction/test_model_1/instructions_DNN_core.txt",OM_mem_inst);
+        $readmemb("../../../../../source/hardware/import/instruction/instructions_controller_core.txt",ctrl_inst_temp);
+        $readmemb("../../../../../source/hardware/import/instruction/instructions_DNN_core.txt",OM_mem_inst);
 
         rst = 1;
         #400

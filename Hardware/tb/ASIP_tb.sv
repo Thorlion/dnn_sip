@@ -1,4 +1,10 @@
 `timescale 1ns / 1ps
+
+// Paths are resolved from the XSim behavioral run directory:
+// fpga/dsip.sim/sim_1/behav/xsim
+`ifndef DSIP_IMPORT_ROOT
+`define DSIP_IMPORT_ROOT "../../../../../source/hardware/import"
+`endif
 `define SINGLE 1
 `define ONE_ONE 2
 `define TWO_TWO 3
@@ -144,7 +150,7 @@ ASIP #(
     .OM_rd_data(data_r_OM),
     .OM_wr_data(data_w_OM),
     .OM_inst_ren(ren_OM_inst),
-    .OM_inst_rd_data(inst_r_OM),
+    .OM_inst_rd(inst_r_OM),
 
     //PORT DNN core ==============
     .DNN_addr(addr_DNN),
@@ -161,21 +167,18 @@ ASIP #(
     .done_vtransfer_prev(done_vtransfer_prev),
     .done_vtransfer(done_vtransfer),
 
-    .OB_wr_addr(addr_write_OB),
-    .OB_rd_addr(addr_read_OB),
-
-    .select(select),
-    .NEOA_read_out(NEOA_read_out),
-    .sel_lut(sel_lut),
-    .LI_data_out(li_data_out),
-    .POA_read_out(POA_read_out),
-    
     .OB_data_read(OB_read_out),
     .MEM_data_read(MEM_read_out),
-
-    .IB_rd_addr(addr_read_IB),
     .dnn_done(done_DNN),
-    .DSIP_done(DSIP_done)
+
+    // Address-debug outputs are intentionally left open in this testbench.
+    .dnn_addr_write_OSP_ML_out(),
+    .dnn_addr_write_OSP_CONV_out(),
+    .dnn_addr_write_FCSP_ML_out(),
+    .dnn_addr_write_FCSP_CONV_out(),
+    .dnn_addr_write_OB_ML_out(),
+    .dnn_addr_write_OB_CONV_out(),
+    .dnn_addr_read_OB_ML_out()
 );
 
 // Clock generation
@@ -220,7 +223,7 @@ module read_input_features;
     // Gán giá trị mặc định cho mảng
     integer i;
     // Mở file txt
-    file = $fopen("D:/ST/DSIP/codeDSIP/venv/model_tiny_test/0949_hex.txt", "r");
+    file = $fopen({`DSIP_IMPORT_ROOT, "/input/image_222.txt"}, "r");
     if (file == 0) begin
       $display("Không thể mở file!");
       $finish;
@@ -266,7 +269,7 @@ module read_weights_conv0;
     // Gán giá trị mặc định cho mảng
     integer i;
     // Mở file txt
-    file = $fopen("D:/ST/DNN_SIP/Traffic Object Detection/Hardware Design/KLTN/binary_parameter/test_model_1/weights_conv0_hex.txt", "r");
+    file = $fopen({`DSIP_IMPORT_ROOT, "/parameter/test_model_1/weights_conv0_hex.txt"}, "r");
     if (file == 0) begin
       $display("Không thể mở file!");
       $finish;
@@ -312,7 +315,7 @@ module read_biases_conv0;
     // Gán giá trị mặc định cho mảng
     integer i;
     // Mở file txt
-    file = $fopen("D:/ST/DNN_SIP/Traffic Object Detection/Hardware Design/KLTN/binary_parameter/test_model_1/biases_conv0_hex.txt", "r");
+    file = $fopen({`DSIP_IMPORT_ROOT, "/parameter/test_model_1/biases_conv0_hex.txt"}, "r");
     if (file == 0) begin
       $display("Không thể mở file!");
       $finish;
@@ -358,7 +361,7 @@ module read_weights_dense0;
     // Gán giá trị mặc định cho mảng
     integer i;
     // Mở file txt
-    file = $fopen("D:/ST/DNN_SIP/Traffic Object Detection/Hardware Design/KLTN/binary_parameter/test_model_1/weights_dense0_hex.txt", "r");
+    file = $fopen({`DSIP_IMPORT_ROOT, "/parameter/test_model_1/weights_dense0_hex.txt"}, "r");
     if (file == 0) begin
       $display("Không thể mở file!");
       $finish;
@@ -404,7 +407,7 @@ module read_biases_dense0;
     // Gán giá trị mặc định cho mảng
     integer i;
     // Mở file txt
-    file = $fopen("D:/ST/DNN_SIP/Traffic Object Detection/Hardware Design/KLTN/binary_parameter/test_model_1/biases_dense0_hex.txt", "r");
+    file = $fopen({`DSIP_IMPORT_ROOT, "/parameter/test_model_1/biases_dense0_hex.txt"}, "r");
     if (file == 0) begin
       $display("Không thể mở file!");
       $finish;
@@ -438,8 +441,8 @@ endmodule
 reg [31:0] controller_instruction_temp[0:5000];
 // Stimulus
 initial begin   
-   $readmemb("D:/ST/DNN_SIP/Traffic Object Detection/Hardware Design/KLTN/binary_instruction/test_model_1/instructions_controller_core.txt",controller_instruction_temp);
-   $readmemb("D:/ST/DNN_SIP/Traffic Object Detection/Hardware Design/KLTN/binary_instruction/test_model_1/instructions_DNN_core.txt",OM_mem_inst);
+   $readmemb({`DSIP_IMPORT_ROOT, "/instruction/instructions_ASIP1_MC_bin.txt"}, controller_instruction_temp);
+   $readmemb({`DSIP_IMPORT_ROOT, "/instruction/instruction_ASIP1_SC_bin.txt"}, OM_mem_inst);
 
    rst = 1;
    #400
@@ -458,15 +461,40 @@ initial begin
    start = 0;
 end
 
-// Live mirrors of OB[0] through OB[9] for the Vivado waveform.
-wire signed [DATA_W_DNN-1:0] ob_wave [0:9];
+// Captured OB[0] through OB[9] for the Vivado waveform.
+// DNN_Core uses the MEMOB IP (instance OBIP), so its storage array is not
+// directly visible. At completion, temporarily drive the asynchronous
+// OB read address and save each returned value into waveform-visible arrays.
+logic signed [DATA_WIDTH_DNN_CORE-1:0] ob_wave [0:9];
+real ob_percent [0:9];
+logic [$clog2(SCRATCHPAD_SIZE)-1:0] ob_probe_addr;
+integer ob_index;
+integer ob_signed_value;
 
-genvar ob_index;
-generate
-    for (ob_index = 0; ob_index < 10; ob_index++) begin : GEN_OB_WAVE
-        assign ob_wave[ob_index] =
-            $signed(dut.dnn_core.OB.memory[ob_index]);
+always @(posedge end_flag) begin
+    force uut.dnn_core.OB_NL_rd_addr = ob_probe_addr;
+
+    for (ob_index = 0; ob_index < 10; ob_index = ob_index + 1) begin
+        ob_probe_addr = ob_index;
+        #1ns; // MEMOB dpo is asynchronous; allow it to settle.
+
+        ob_wave[ob_index] = $signed(OB_read_out);
+        ob_signed_value = $signed(ob_wave[ob_index]);
+
+        // Convert signed Q8.8 (or Q format selected by DECIMAL_BIT) to percent.
+        // This scales each value by 100; it does not normalize all ten values.
+        ob_percent[ob_index] =
+            (100.0 * ob_signed_value) / (1 << DECIMAL_BIT);
+
+        $display("[%0t] OB[%0d] = 0x%h, signed=%0d, percentage=%0.4f%%",
+                 $time,
+                 ob_index,
+                 ob_wave[ob_index],
+                 ob_signed_value,
+                 ob_percent[ob_index]);
     end
-endgenerate
+
+    release uut.dnn_core.OB_NL_rd_addr;
+end
 
 endmodule
