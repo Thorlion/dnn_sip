@@ -1,0 +1,16 @@
+shared/regs.sv
+shared/mem.sv
+dnn_core/dnn_core.sv
+dnn_core/debug.sv
+dnn_core/agu.sv
+dnn_core/agu_adder.sv
+dnn_core/dec_if.sv
+dnn_core/dec_ml.sv
+dnn_core/dec_conv.sv
+dnn_core/dec_nl.sv
+dnn_core/dec_pl.sv
+dnn_core/dec_ms.sv
+dnn_core/mac.sv
+dnn_core/lut0.sv
+dnn_core/lut1.sv
+dnn_core/pwl.sv

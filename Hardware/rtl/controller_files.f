@@ -1,0 +1,15 @@
+shared/regs.sv
+shared/mem.sv
+controller/controller.sv
+controller/dec_ctrl.sv
+controller/reg_file.sv
+controller/branch.sv
+controller/forward.sv
+controller/ctrl_alu.sv
+controller/cmd_gen.sv
+controller/mem_ctrl.sv
+controller/ctrl_mode2.sv
+controller/ctrl_mode3.sv
+controller/ctrl_mode4.sv
+controller/mux4to1.sv
+controller/mux8to1.sv
