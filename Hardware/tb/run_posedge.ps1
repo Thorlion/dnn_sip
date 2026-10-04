@@ -1,6 +1,6 @@
 param(
     [string]$ModelSimBin = 'D:\Quartus\modelsim_ase\win32aloem',
-    [ValidateSet('posedge_flow_tb','relu_activation_tb')]
+    [ValidateSet('posedge_flow_tb','relu_activation_tb','fc_tree_retime_tb')]
     [string]$Testbench = 'posedge_flow_tb'
 )
 $ErrorActionPreference = 'Stop'
@@ -20,7 +20,11 @@ try {
         "$taskIP/BRAM_1/sim/BRAM.v" "$taskIP/MEMSC_1/sim/MEMSC.v" "$taskIP/MEMOB_1/sim/MEMOB.v"
     if ($LASTEXITCODE -ne 0) { throw 'Memory IP compilation failed; regenerate project IP first' }
     $taskRTL = Join-Path $taskRoot 'source/hardware/rtl'
-    $taskLog = if ($Testbench -eq 'posedge_flow_tb') { 'posedge_flow' } else { 'relu_activation' }
+    $taskLog = switch ($Testbench) {
+        'posedge_flow_tb' { 'posedge_flow' }
+        'relu_activation_tb' { 'relu_activation' }
+        'fc_tree_retime_tb' { 'fc_tree_retime' }
+    }
     $taskFiles = Get-Content -LiteralPath "$taskRTL/dnn_core_files.f" |
         ForEach-Object { Join-Path $taskRTL $_ }
     & "$ModelSimBin\vlog.exe" -sv -work work -l rtl_compile.log `
@@ -28,7 +32,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'RTL compilation failed' }
     & "$ModelSimBin\vsim.exe" -c -lib work $Testbench -l "$taskLog.log" `
         -wlf "$taskLog.wlf" -do 'run -all; quit -f' |
-        Where-Object { $_ -match '^# POSEDGE_FLOW|^# RELU_|^# TEST_|\*\* (Error|Fatal)' }
+        Where-Object { $_ -match '^# POSEDGE_FLOW|^# RELU_|^# FC_TREE_RETIME|^# TEST_|\*\* (Error|Fatal)' }
     if ($LASTEXITCODE -ne 0 -or
         !(Select-String -LiteralPath "$taskLog.log" -SimpleMatch TEST_PASS) -or
         (Select-String -LiteralPath "$taskLog.log" -Pattern '\*\* (Error|Fatal)')) {

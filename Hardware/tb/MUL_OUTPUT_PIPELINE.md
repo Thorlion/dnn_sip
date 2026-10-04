@@ -1,5 +1,10 @@
 # Controller multiplier-output pipeline: working implementation
 
+Timing update (2026-10-05): the DNN FC tree has since been retimed. The latest
+working-design timing and verification are in FC_TREE_RETIMING.md. The timing
+below records the controller deployment before that DNN change; the controller
+pipeline described here remains in use.
+
 Applied on 2026-10-04 in the main working directory. This supersedes the
 working-design timing in WB_ONLY_FORWARDING.md and BRANCH_WB_TIMING.md.
 The experimental mul_stage_controller.sv/mul_stage_alu.sv behavior is now

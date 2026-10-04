@@ -961,85 +961,54 @@ module DNN_Core#(
         .dout(NOL_read)
     );
 
+    // Retime the FC reduction across the existing NL/PL register boundary.
+    // Latency and enables are unchanged; all arithmetic wraps at DATA_W.
+    logic [DATA_W-1:0] NFC_data_wr;
+    logic [DATA_W-1:0] NFC_data_rd;
+    logic [DATA_W-1:0] NFC_partial_read [0:3];
+    logic signed [DATA_W:0] sum_stage1 [0:31];
+    logic signed [DATA_W+1:0] sum_stage2 [0:15];
+    logic signed [DATA_W+2:0] sum_stage3 [0:7];
+    logic signed [DATA_W+3:0] sum_stage4 [0:3];
+    logic signed [DATA_W+4:0] sum_stage5 [0:1];
     logic signed [DATA_W+5:0] sum_temp;
-    //NFC(NonLinear/Fully Connected)
-    logic [DATA_W- 1 : 0] NFC_data_wr; 
-    logic [DATA_W- 1 : 0] NFC_data_rd;
-    
-    logic signed [DATA_W  : 0] sum_stage1 [0:31];   // 17 bits for overflow
-    logic signed [DATA_W +1 : 0] sum_stage2 [0:15];
-    logic signed [DATA_W +2 : 0] sum_stage3 [0:7];
-    logic signed [DATA_W +3 : 0] sum_stage4 [0:3];
-    logic signed [DATA_W +4 : 0] sum_stage5 [0:1];
 
     integer k;
-    //Adder tree
     always_comb begin
-        // Stage 1: 64 -> 32
-        for (k = 0; k < 32; k = k + 1) begin
-            sum_stage1[k] = EOA_read[2*k] + EOA_read[2*k + 1];
-        end
-        // Stage 2: 32 -> 16
-        for (k = 0; k < 16; k = k + 1) begin
-            sum_stage2[k] = sum_stage1[2*k] + sum_stage1[2*k + 1];
-        end
-        // Stage 3: 16 -> 8
-        for (k = 0; k < 8; k = k + 1) begin
-            sum_stage3[k] = sum_stage2[2*k] + sum_stage2[2*k + 1];
-        end
-        // Stage 4: 8 -> 4
-        for (k = 0; k < 4; k = k + 1) begin
-            sum_stage4[k] = sum_stage3[2*k] + sum_stage3[2*k + 1];
-        end
-        // Stage 5: 4 -> 2
-        for (k = 0; k < 2; k = k + 1) begin
-            sum_stage5[k] = sum_stage4[2*k] + sum_stage4[2*k + 1];
-        end
-        // Last Stage: 2 -> 1
-        sum_temp = sum_stage5[0] + sum_stage5[1];
-    end 
-    /*
-    //EXAMPLE ADDER TREE
-    EOA_read[63:0] = {64->1}
-    Stage1: begin 
-        ss1[0] = 1 + 2 = 3
-        ss1[1] = 3 + 4 = 7
-        ... ss1[31] = 63 + 64 = 127
+        for (k = 0; k < 32; k = k + 1)
+            sum_stage1[k] = EOA_read[2*k] + EOA_read[2*k+1];
+        for (k = 0; k < 16; k = k + 1)
+            sum_stage2[k] = sum_stage1[2*k] + sum_stage1[2*k+1];
+        for (k = 0; k < 8; k = k + 1)
+            sum_stage3[k] = sum_stage2[2*k] + sum_stage2[2*k+1];
+        for (k = 0; k < 4; k = k + 1)
+            sum_stage4[k] = sum_stage3[2*k] + sum_stage3[2*k+1];
     end
-    Stage2: begin
-        ss2[0] = 3 + 7 = 10
-        ss2[1] = 11 + 15 = 26
-        ... ss2[15] = 123 + 127 = 250
-    end
-    Stage3: begin
-        ss3[0] = 10 + 26 = 36
-        ss3[1] = 42 + 58 = 100
-        ... ss3[7] = 234 + 250 = 484
-    end
-    Stage4: begin
-        ss4[0] = 36 + 100 = 136
-        ss4[1] = 164 + 228 = 392
-        ss4[2] = 292 + 356 = 648
-        ss4[3] = 420 + 484 = 904
-    end
-    Stage5: begin
-        ss5[0] = 136 + 392 = 528
-        ss5[1] = 648 + 904 = 1552
-    end
-    sum_temp = 528 + 1552 = 2080 
-    */
 
-    //NFC
+    // Replace the one full-sum NFC register with four group-sum registers.
+    // Truncation here is equivalent to the original final DATA_W-bit truncation.
+    genvar nfc_group;
+    generate
+        for (nfc_group = 0; nfc_group < 4; nfc_group = nfc_group + 1) begin : NFC_partial_array
+            regs #(.DATA_W(DATA_W)) NFC_PARTIAL (
+                .clk(clk),
+                .rst(rst),
+                .wen(pipe_valid[3]),
+                .din(sum_stage4[nfc_group][DATA_W-1:0]),
+                .dout(NFC_partial_read[nfc_group])
+            );
+        end
+    endgenerate
+
+    integer nfc_tail;
+    always_comb begin
+        for (nfc_tail = 0; nfc_tail < 2; nfc_tail = nfc_tail + 1)
+            sum_stage5[nfc_tail] = NFC_partial_read[2*nfc_tail] + NFC_partial_read[2*nfc_tail+1];
+        sum_temp = sum_stage5[0] + sum_stage5[1];
+    end
+    // Only POFC consumes this sum. Its existing pipe_valid[4] capture stays intact.
     assign NFC_data_wr = sum_temp;
-    regs #(
-        .DATA_W(DATA_W)
-    ) NFC (
-        .clk(clk),
-        .rst(rst),
-        .wen(pipe_valid[3]),
-        .din(NFC_data_wr),
-        .dout(NFC_data_rd)
-    );
+    assign NFC_data_rd = NFC_data_wr;
 
     // =========================================================================
     // STAGE PL (POOLING)
