@@ -47,6 +47,7 @@ module Mode_ctrller_3 #(
             vsync_out       <= 0;
             hsync_out       <= 0;
             end_flag        <= 0;
+            start_DNN_core  <= 0;
         end
         else begin
             case (state)
@@ -99,7 +100,8 @@ module Mode_ctrller_3 #(
                 // Chờ cho DNN xử lý xong
                 WAIT_CORE_DONE: begin
                     start_DNN_core <= 0;
-                    if(DNN_done) begin
+                    // Ignore sticky completion while the core samples start.
+                    if(!start_DNN_core && DNN_done) begin
                         enable_PC <= 1;
                         state <= WAIT_HSYNC;
                     end

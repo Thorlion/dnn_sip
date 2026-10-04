@@ -4,6 +4,7 @@ module Mem_ctrl #(
 )(
     input  logic clk,
     input  logic rst,
+    output logic busy,
 
     // Command from controller
     input  logic [67:0]     command_mc,
@@ -49,6 +50,7 @@ module Mem_ctrl #(
     logic [67:0]    cmd_temp;
     logic [15:0]    data_temp;
     logic [211:0]   inst_temp;
+    assign busy = (state != 0);
 
     always_ff @(posedge clk or posedge rst) begin
         if(rst) begin
@@ -172,6 +174,25 @@ module Mem_ctrl #(
 
     // Control Decoding state
     always_comb begin
+        // Fully combinational Moore decoding; do not latch stale strobes/data.
+        OM_addr = '0;
+        OM_wen = 1'b0;
+        OM_ren = 1'b0;
+        OM_wr_data = '0;
+        OM_inst_ren = 1'b0;
+        DNN_addr = '0;
+        mem_inst_wen = 1'b0;
+        IB_wen = '0;
+        KSP_wen = '0;
+        BSP_wen = 1'b0;
+        OB_ren = 1'b0;
+        DNN_wr_data = '0;
+        DNN_inst_wr = '0;
+        command_P0_out = '0;
+        data_P0_out = '0;
+        command_P1_out = '0;
+        data_P1_out = '0;
+        inst_P1_out = '0;
         case(state) 
             5'd0: begin
                 //PORT OM

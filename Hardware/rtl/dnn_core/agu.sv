@@ -3,6 +3,7 @@ module AGU #(
 )(
     input  logic clk,
     input  logic rst,
+    input  logic issue_en,             // Only update state for an issued instruction
     input  logic run_en,
     input  logic sit_en,
     input  logic sbp_en,
@@ -97,6 +98,9 @@ module AGU #(
             n_active    <= '0;
         end 
         
+        else if (!issue_en) begin
+            n_active <= 1'b0;
+        end
         else if (iteration == 0 && (PC == pc_loop)) begin
             add_buf <= 0;
         end
@@ -142,21 +146,10 @@ module AGU #(
         end
     end
 
-    always_ff @(posedge clk or posedge rst) begin
-        if(rst) begin
-            select_next_PC <= 1'b1;
-        end
-        else begin
-            // Both clocked processes see the pre-edge iteration value.
-            // At 1, this is the final pass: decrement to zero without jumping.
-            if(reach_bp == 0 || iteration <= 1) begin
-                select_next_PC <= '0;
-            end
-            else begin
-                select_next_PC <= 1'b1;
-            end
-        end
-    end
+    // PC and loop state advance on the same edge. Decide from the old state,
+    // not from a registered branch result one cycle later. The final pass
+    // decrements iteration from one to zero without redirecting the PC.
+    assign select_next_PC = issue_en && run_en && reach_bp && (iteration > 1);
     always_ff @(posedge clk or posedge rst) begin
         if(rst) begin
             IB_rd_reg   <= '0;
@@ -168,7 +161,7 @@ module AGU #(
             BSP_rd_reg  <= '0;
             FCSP_wr_reg <= '0;
             FCSP_rd_reg <= '0;
-        end else begin
+        end else if (issue_en) begin
             IB_rd_reg   <= IB_new_rd_addr;
             KSP_rd_reg  <= KSP_new_rd_addr;
             OSP_wr_reg  <= OSP_new_wr_addr;

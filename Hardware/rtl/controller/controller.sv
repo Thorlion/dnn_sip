@@ -77,8 +77,10 @@ module Controller #(
     always_ff @(posedge clk or posedge rst) begin
         if(rst) begin
             start_flag <= '0;
+        end else if (end_flag) begin
+            start_flag <= 1'b0;
         end else if (start) begin
-            start_flag <= ~start_flag;
+            start_flag <= 1'b1;
         end 
     end
 
@@ -88,13 +90,18 @@ module Controller #(
     logic [DATA_W - 1:0]    extend_imm16_shift; // Value of ex_imm16 << 16
     logic [$clog2(MCMEM_W)-1:0] PC;
     logic PC_en;            // Program Counter enable
+    logic issue_valid;
+    logic memory_busy;
+    logic memory_inflight;
+    logic fetch_memory_wait;
+    logic end_drain;
     always_ff @(posedge clk or posedge rst) begin
         if(rst) begin
             PC  <= '0;
         end else if(end_flag) begin
             PC  <= '0;
         end else if (start_flag) begin
-            if(PC_en) begin
+            if(issue_valid) begin
                 if(!PC_sel) begin
                     PC  <= PC + 1;
                 end else begin
@@ -167,6 +174,8 @@ module Controller #(
     logic [DATA_W-1:0] alu_result;
     logic [DATA_W-1:0] alu_result_reg;
     logic [DATA_W-1:0] rtemp_rd_data;
+    logic [DATA_W-1:0] ra_forwarded, rb_forwarded;
+    logic [DATA_W-1:0] rd_forwarded, rtemp_forwarded;
 
     reg_file #(
         .SIZE(32),
@@ -188,6 +197,17 @@ module Controller #(
         .rtemp_rd_data(rtemp_rd_data)
     );
 
+    // Decode sees pre-edge RF contents. Forward the newest EX result, then
+    // pending WB, for ALU operands, branches and all four memory-address ports.
+    assign ra_forwarded = (rf_wen_reg1 && rd_reg1 != 0 && rd_reg1 == ra) ? alu_result :
+                          (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == ra) ? alu_result_reg : ra_rd_data;
+    assign rb_forwarded = (rf_wen_reg1 && rd_reg1 != 0 && rd_reg1 == rb) ? alu_result :
+                          (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == rb) ? alu_result_reg : rb_rd_data;
+    assign rd_forwarded = (rf_wen_reg1 && rd_reg1 != 0 && rd_reg1 == rd) ? alu_result :
+                          (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == rd) ? alu_result_reg : rd_rd_data;
+    assign rtemp_forwarded = (rf_wen_reg1 && rd_reg1 != 0 && rd_reg1 == rtemp) ? alu_result :
+                            (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == rtemp) ? alu_result_reg : rtemp_rd_data;
+
     assign extend_imm16 = {16'b0, imm16};
     assign extend_imm16_shift = extend_imm16<<16;
 
@@ -195,7 +215,7 @@ module Controller #(
     BranchDecision #(
         .DATA_W(DATA_W)
     ) decide_pc (
-        .ra_rd_data(ra_rd_data),
+        .ra_rd_data(ra_forwarded),
         .br(br_signal),
         .cbr(cbr_signal),
         .PC_sel(PC_sel)
@@ -207,7 +227,7 @@ module Controller #(
     mux4to1 #(
         .DATA_W(DATA_W)
     ) mux_sel_oper1 (
-        .d0(ra_rd_data),
+        .d0(ra_forwarded),
         .d1('z),
         .d2('0),
         .d3('z),
@@ -219,7 +239,7 @@ module Controller #(
     mux8to1 #(
         .DATA_W(DATA_W)
     )mux_sel_oper2(
-        .d0(rb_rd_data),
+        .d0(rb_forwarded),
         .d1(extend_imm16),
         .d2('0),
         .d3(32'd1),
@@ -241,41 +261,28 @@ module Controller #(
     logic [5:0] opcode_reg;
 
     // Operand 1 latch reg
-    regs #(.DATA_W(DATA_W)) DRA (.clk(!clk), .rst(rst), .wen(1'b1), .din(alu_oper1), .dout(alu_oper1_reg));
+    regs #(.DATA_W(DATA_W)) DRA (.clk(clk), .rst(rst), .wen(issue_valid), .din(alu_oper1), .dout(alu_oper1_reg));
     // Operand 2 latch reg
-    regs #(.DATA_W(DATA_W)) DRB (.clk(!clk), .rst(rst), .wen(1'b1), .din(alu_oper2), .dout(alu_oper2_reg));
+    regs #(.DATA_W(DATA_W)) DRB (.clk(clk), .rst(rst), .wen(issue_valid), .din(alu_oper2), .dout(alu_oper2_reg));
     // RB addr latch reg
-    regs #(.DATA_W(5)) ARD (.clk(!clk), .rst(rst), .wen(1'b1), .din(rd), .dout(rd_reg1));
+    regs #(.DATA_W(5)) ARD (.clk(clk), .rst(rst), .wen(1'b1), .din(rd), .dout(rd_reg1));
     // Reg_file write enable latch reg
-    regs #(.DATA_W(1)) WENRF (.clk(!clk), .rst(rst), .wen(1'b1), .din(rf_wen), .dout(rf_wen_reg1));
+    regs #(.DATA_W(1)) WENRF (.clk(clk), .rst(rst), .wen(1'b1), .din(issue_valid && rf_wen), .dout(rf_wen_reg1));
     // ALU_OP latch reg
-    regs #(.DATA_W(3)) ALUOPREG (.clk(!clk), .rst(rst), .wen(1'b1), .din(alu_op), .dout(alu_op_reg));
+    regs #(.DATA_W(3)) ALUOPREG (.clk(clk), .rst(rst), .wen(issue_valid), .din(alu_op), .dout(alu_op_reg));
     // RA addr latch reg
-    regs #(.DATA_W(5)) ARA (.clk(!clk), .rst(rst), .wen(1'b1), .din(ra), .dout(ra_reg));
+    regs #(.DATA_W(5)) ARA (.clk(clk), .rst(rst), .wen(1'b1), .din(ra), .dout(ra_reg));
     // RB addr latch reg
-    regs #(.DATA_W(5)) ARB (.clk(!clk), .rst(rst), .wen(1'b1), .din(rb), .dout(rb_reg));
+    regs #(.DATA_W(5)) ARB (.clk(clk), .rst(rst), .wen(1'b1), .din(rb), .dout(rb_reg));
     // OPCODE latch reg
-    regs #(.DATA_W(6)) OPR (.clk(!clk), .rst(rst), .wen(1'b1), .din(instruction[31:26]), .dout(opcode_reg));
-
-    logic ra_sel_forw;
-    logic rb_sel_forw;
-
-    Ctrl_forw #(
-        .DATA_W(DATA_W)
-    ) forwarding_block(
-        .opcode(opcode_reg),
-        .rd_before(rd_reg2),  
-        .ra(ra_reg),
-        .rb(rb_reg),
-        .sel_ra_forw(ra_sel_forw),
-        .sel_rb_forw(rb_sel_forw)
-    );
+    regs #(.DATA_W(6)) OPR (.clk(clk), .rst(rst), .wen(1'b1), .din(instruction[31:26]), .dout(opcode_reg));
 
     logic [DATA_W-1:0] alu_oper1_final;
     logic [DATA_W-1:0] alu_oper2_final;
 
-    assign alu_oper1_final = (ra_sel_forw == 0) ? alu_oper1_reg : alu_result_reg;
-    assign alu_oper2_final = (rb_sel_forw == 0) ? alu_oper2_reg : alu_result_reg;
+    // Operands have already been forwarded at decode.
+    assign alu_oper1_final = alu_oper1_reg;
+    assign alu_oper2_final = alu_oper2_reg;
 
     MC_alu #(
         .DATA_W(DATA_W)
@@ -286,32 +293,32 @@ module Controller #(
         .result(alu_result)
     );
     // alu_result latch reg
-    regs #(.DATA_W(DATA_W)) ALU_REG (.clk(!clk), .rst(rst), .wen(1'b1), .din(alu_result), .dout(alu_result_reg)); 
+    regs #(.DATA_W(DATA_W)) ALU_REG (.clk(clk), .rst(rst), .wen(rf_wen_reg1), .din(alu_result), .dout(alu_result_reg));
     // Reg_file write enable latch reg 2
-    regs #(.DATA_W(1)) WENRF2 (.clk(!clk), .rst(rst), .wen(1'b1), .din(rf_wen_reg1), .dout(rf_wen_reg2));  
+    regs #(.DATA_W(1)) WENRF2 (.clk(clk), .rst(rst), .wen(1'b1), .din(rf_wen_reg1), .dout(rf_wen_reg2));
     // RD addr latch reg 2
-    regs #(.DATA_W(5)) ARD2 (.clk(!clk), .rst(rst), .wen(1'b1), .din(rd_reg1), .dout(rd_reg2));
+    regs #(.DATA_W(5)) ARD2 (.clk(clk), .rst(rst), .wen(1'b1), .din(rd_reg1), .dout(rd_reg2));
 
     // Region B ==========================================================================================================
     logic [DATA_W - 1:0] addr_base_src;
-    assign addr_base_src = rd_rd_data;
+    assign addr_base_src = rd_forwarded;
     logic [DATA_W - 1:0] addr_offset_src;
-    assign addr_offset_src = ra_rd_data;
+    assign addr_offset_src = ra_forwarded;
     logic [DATA_W - 1:0] addr_base_dest;
-    assign addr_base_dest = rb_rd_data;
+    assign addr_base_dest = rb_forwarded;
     logic [DATA_W - 1:0] addr_offset_dest;
-    assign addr_offset_dest = rtemp_rd_data;
+    assign addr_offset_dest = rtemp_forwarded;
     logic [3:0] type_access_reg;
     logic [DATA_W - 1:0] addr_base_src_reg;
     logic [DATA_W - 1:0] addr_offset_src_reg;
     logic [DATA_W - 1:0] addr_base_dest_reg;
     logic [DATA_W - 1:0] addr_offset_dest_reg;
 
-    regs #(.DATA_W(4)) IR(.clk(!clk), .rst(rst), .wen(1'b1), .din(type_access), .dout(type_access_reg));
-    regs #(.DATA_W(DATA_W)) DR_Base_OM(.clk(!clk), .rst(rst), .wen(1'b1), .din(addr_base_src), .dout(addr_base_src_reg));
-    regs #(.DATA_W(DATA_W)) DR_Offset_OM(.clk(!clk), .rst(rst), .wen(1'b1), .din(addr_offset_src), .dout(addr_offset_src_reg));
-    regs #(.DATA_W(DATA_W)) DR_Base_DNN(.clk(!clk), .rst(rst), .wen(1'b1), .din(addr_base_dest), .dout(addr_base_dest_reg));
-    regs #(.DATA_W(DATA_W)) DR_Offset_DNN(.clk(!clk), .rst(rst), .wen(1'b1), .din(addr_offset_dest), .dout(addr_offset_dest_reg));
+    regs #(.DATA_W(4)) IR(.clk(clk), .rst(rst), .wen(1'b1), .din(issue_valid ? type_access : 4'd0), .dout(type_access_reg));
+    regs #(.DATA_W(DATA_W)) DR_Base_OM(.clk(clk), .rst(rst), .wen(issue_valid), .din(addr_base_src), .dout(addr_base_src_reg));
+    regs #(.DATA_W(DATA_W)) DR_Offset_OM(.clk(clk), .rst(rst), .wen(issue_valid), .din(addr_offset_src), .dout(addr_offset_src_reg));
+    regs #(.DATA_W(DATA_W)) DR_Base_DNN(.clk(clk), .rst(rst), .wen(issue_valid), .din(addr_base_dest), .dout(addr_base_dest_reg));
+    regs #(.DATA_W(DATA_W)) DR_Offset_DNN(.clk(clk), .rst(rst), .wen(issue_valid), .din(addr_offset_dest), .dout(addr_offset_dest_reg));
 
     logic [67:0] cmd;  
     MemAcsCmdGen #(
@@ -327,7 +334,21 @@ module Controller #(
     );
     // command latch reg
     logic [67:0] cmd_reg;
-    regs #(.DATA_W(68)) CMD_REG(.clk(!clk), .rst(rst), .wen(1'b1), .din(cmd), .dout(cmd_reg));
+    // If an incoming port request wins the idle memory FSM while a local
+    // command is in flight, retain that command until it can be accepted.
+    regs #(.DATA_W(68)) CMD_REG(.clk(clk), .rst(rst),
+        .wen(!memory_busy || cmd_reg[67:64] == 0), .din(cmd), .dout(cmd_reg));
+
+    // Memory/control instructions wait for outstanding transfers, while ALU
+    // and branch work can overlap them. No command is dropped or reissued,
+    // and a following SDC/END cannot pass an unfinished memory write.
+    assign memory_inflight = (type_access_reg != 0) || (cmd_reg[67:64] != 0) || memory_busy;
+    assign fetch_memory_wait = memory_inflight &&
+                               ((type_access != 0) ||
+                                (instruction[31:26] >= 6'd21 && instruction[31:26] <= 6'd24));
+    assign end_drain = (instruction[31:26] == 6'b010111) &&
+                       ((rf_wen_reg1 && rd_reg1 != 0) || (rf_wen_reg2 && rd_reg2 != 0));
+    assign issue_valid = start_flag && PC_en && !end_flag && !fetch_memory_wait && !end_drain;
 
     Mem_ctrl #(
         .BASE_DATA_OM(BASE_DATA_OM),
@@ -335,6 +356,7 @@ module Controller #(
     ) mctrl (
         .clk(clk),
         .rst(rst),
+        .busy(memory_busy),
 
         // command from controller
         .command_mc(cmd_reg),
@@ -376,7 +398,8 @@ module Controller #(
 
     // Region C ==========================================================================================================
     logic [5:0] mode_opcode;
-    assign mode_opcode = instruction[31:26];
+    // A held PC is not reissued; waiting states still respond to handshakes.
+    assign mode_opcode = issue_valid ? instruction[31:26] : 6'b111111;
     generate 
         if(MODEL == `SINGLE) begin
             assign hsync_out       = '0;
@@ -384,7 +407,7 @@ module Controller #(
             assign done_vtransfer  = '0;
             Mode_ctrller_2 mode_ctrl(
                 .opcode(mode_opcode),
-                .clk(!clk),
+                .clk(clk),
                 .rst(rst),        
                 .start(start),      // DSIP start flag
                 .dnn_done(dnn_done),       
@@ -402,7 +425,7 @@ module Controller #(
                 .IS_FIRST_ROW(IS_FIRST_ROW)
             )mode_ctrl(
                 .opcode(mode_opcode),
-                .clk(!clk),
+                .clk(clk),
                 .rst(rst),        
                 .start(start),      // DSIP start flag
                 .DNN_done(dnn_done),
@@ -423,7 +446,7 @@ module Controller #(
                 .IS_FIRST_ROW(IS_FIRST_ROW)
             )mode_ctrl(
                 .opcode(mode_opcode),
-                .clk(!clk),
+                .clk(clk),
                 .rst(rst),
                 .start(start),      // DSIP start flag
                 .vsync_in(vsync_in),       // DSIP vsync flag

@@ -74,8 +74,6 @@ module DNN_Core_debug#(
     logic [$clog2(SCRATCHPAD_W)-1:0]    OB_rd_addr;              //Address read Output Buffer (6 bit)
     logic [$clog2(SCRATCHPAD_W)-1:0]    OB_wr_addr;              //Address write Output Buffer (6 bit)
 
-    logic                                sel_lut;                // Select lookup table (LUT0 or LUT1)
-    logic [DATA_W - 1 : 0]               LI_data_out;             // Read data of LI (Linear Interpolation Array)
     genvar i;                           // Create i for loop generator
     // =========================================================================
     // STAGE IF (Instruction Fetch)
@@ -101,14 +99,13 @@ module DNN_Core_debug#(
     // Slot2            (91bit): Control stage IF (base_addr for Scratchpad)
     // Slot3            (11bit): Control stage MEMLOAD (assign value from memory to MLI, MLK, MLO)
     // Slot4            (6bit): Control stage CONV (choose operand for MAC & Bias)
-    // Slot5            (9bit): Control stage ACTIVATION/Nonlinear (choose lookuptable & choose data to write to NOA) 
+    // Slot5            (9bit): NL control (bit 8 reserved; bits 7:0 select NOA)
     // Slot6            (12bit): Control stage POOLING (Control maxpooling, choose operand & choose data to write to POA) 
     // Slot7            (6bit): Control stage MEMSTORE (assign value going to OB, OSP or FCSP)
     logic [10:0] slot1;     
     logic [90:0] slot2;
     assign slot1 = instr_read[146:136];
     assign slot2 = instr_read[135:45];
-    assign dnn_done = instr_read[147];
 
     // Pre-Slicing Instruction
     logic [63:0] ps_global;      
@@ -150,6 +147,12 @@ module DNN_Core_debug#(
         .FCSP_rd_base_addr(FCSP_rd_base_addr)       // New FCSP read base address
     );
 
+    logic start_flag;
+    logic draining;
+    logic issue_valid;
+    logic [5:0] pipe_valid;
+    logic [5:0] pipe_end;
+
     // Stage IF Instruction latch registers
     logic [63:0]    IF_global;
     logic [10:0]    IF_slot3;
@@ -167,43 +170,55 @@ module DNN_Core_debug#(
             IF_slot6  <= '0;
             IF_slot7  <= '0;
         end else begin
-            IF_global <= ps_global;
-            IF_slot3  <= ps_slot3;
-            IF_slot4  <= ps_slot4;
-            IF_slot5  <= ps_slot5;
-            IF_slot6  <= ps_slot6;
-            IF_slot7  <= ps_slot7;
+            IF_global <= issue_valid ? ps_global : '0;
+            IF_slot3  <= issue_valid ? ps_slot3 : '0;
+            IF_slot4  <= issue_valid ? ps_slot4 : '0;
+            IF_slot5  <= issue_valid ? ps_slot5 : '0;
+            IF_slot6  <= issue_valid ? ps_slot6 : '0;
+            IF_slot7  <= issue_valid ? ps_slot7 : '0;
         end
     end
 
-    logic start_flag;  //Latch start
+    // One valid/end token per instruction stage: IF, ML, CONV, NL, PL, MS.
+    // BRAM reads and every DNN data register use the same rising edge.
+    // END is issued once; completion is reported at its MS commit edge.
+    assign issue_valid = start_flag && !draining;
+
     always_ff @(posedge clk or posedge rst) begin
-        if(rst) begin
-            start_flag <= '0;
-        end else if (start) begin
-            start_flag <= 1'b1;
-        end else if (dnn_done) begin
-            start_flag <= '0;
+        if (rst) begin
+            start_flag <= 1'b0;
+            draining   <= 1'b0;
+            dnn_done   <= 1'b0;
+            pipe_valid <= '0;
+            pipe_end   <= '0;
         end else begin
-            start_flag <= start_flag;
+            pipe_valid <= {pipe_valid[4:0], issue_valid};
+            pipe_end   <= {pipe_end[4:0], issue_valid && instr_read[147]};
+            if (!start_flag && start) begin
+                start_flag <= 1'b1;
+                draining   <= 1'b0;
+                dnn_done   <= 1'b0;
+            end else if (pipe_valid[5] && pipe_end[5]) begin
+                // The memories sample the final MS write packet on this edge.
+                start_flag <= 1'b0;
+                draining   <= 1'b0;
+                dnn_done   <= 1'b1;
+            end else if (issue_valid && instr_read[147]) begin
+                draining <= 1'b1;
+            end
         end
     end
 
-    // Program Counter
-    always_ff @(negedge clk or posedge rst) begin
-        if(rst) begin
+    // Branch selection is combinational from the pre-edge AGU state.
+    // Hold the END address while earlier instructions drain.
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) begin
             PC <= '0;
-        end else begin
-            if ((start_flag) && (!dnn_done)) begin
-                if(select_next_PC) begin
-                    PC <= PC_start;
-                end else begin
-                    PC <= PC + 1'b1;
-                end
-            end
-            else begin
-                PC <= '0;
-            end
+        end else if (!start_flag || (pipe_valid[5] && pipe_end[5])) begin
+            PC <= '0;
+        end else if (issue_valid && !instr_read[147]) begin
+            if (select_next_PC) PC <= PC_start;
+            else PC <= PC + 1'b1;
         end
     end
 
@@ -216,6 +231,7 @@ module DNN_Core_debug#(
     ) du_AGU (
         .clk(clk),      
         .rst(rst),
+        .issue_en(issue_valid),
         .run_en(run_en),                                // AGU start
         .sit_en(sit_en),                                // Set iteration (loop counter)
         .sbp_en(sbp_en),                                // Set breakpoint
@@ -249,6 +265,16 @@ module DNN_Core_debug#(
         .n_active(n_active)
     );
 
+    // The registered AGU address and IF load mode describe the same read.
+    // Do not read scratchpads during reset, idle, or instructions that hold ML.
+    logic en_read_IB, en_read_KSP, en_read_OSP, en_read_BSP, en_read_FCSP;
+    DecoderML decRead (
+        .slot3(IF_slot3),
+        .en_load_IB(en_read_IB), .en_load_KSP(en_read_KSP),
+        .en_load_OSP(en_read_OSP), .en_load_BSP(en_read_BSP),
+        .en_load_FCSP(en_read_FCSP), .sel_MLOM()
+    );
+
     //Declare IB (input buffer)
     logic [DATA_W-1:0] IB_read [0:BLOCKS_PER_ROW-1];
     generate 
@@ -258,9 +284,9 @@ module DNN_Core_debug#(
                 .DEPTH(SCRATCHPAD_W),
                 .EN_OUT_FF(1)
             ) IB (
-                .clk(!clk),
+                .clk(clk),
                 .wen(en_write_IB[i]),
-                .ren(1'b1),
+                .ren(pipe_valid[0] && en_read_IB),
                 .addr_w(IB_wr_addr), 
                 .addr_r(IB_rd_addr),
                 .wdata(data_write),
@@ -278,9 +304,9 @@ module DNN_Core_debug#(
                 .DEPTH(SCRATCHPAD_W),
                 .EN_OUT_FF(1)
             ) KSP (
-                .clk(!clk),
+                .clk(clk),
                 .wen(en_write_KSP[i]),
-                .ren(1'b1),
+                .ren(pipe_valid[0] && en_read_KSP),
                 .addr_w(KSP_wr_addr), 
                 .addr_r(KSP_rd_addr),
                 .wdata(data_write),
@@ -301,9 +327,9 @@ module DNN_Core_debug#(
         .DEPTH(SCRATCHPAD_W),
         .EN_OUT_FF(1)
     ) FCSP(
-        .clk(!clk),
+        .clk(clk),
         .wen(FCSP_store_en),
-        .ren(1'b1),
+        .ren(pipe_valid[0] && en_read_FCSP),
         .addr_w(FCSP_MS_wr_addr), 
         .addr_r(FCSP_rd_addr),
         .wdata(POFC_rd_data),
@@ -314,9 +340,9 @@ module DNN_Core_debug#(
     regs #(
         .DATA_W(DATA_W)
     )POFC(
-        .clk(!clk),
+        .clk(clk),
         .rst(rst),
-        .wen(1'b1),
+        .wen(pipe_valid[4]),
         .din(POFC_wr_data),
         .dout(POFC_rd_data)
     );
@@ -328,9 +354,9 @@ module DNN_Core_debug#(
         .DEPTH(SCRATCHPAD_W),
         .EN_OUT_FF(1)
     ) BSP (
-        .clk(!clk),
+        .clk(clk),
         .wen(en_write_BSP),
-        .ren(1'b1),
+        .ren(pipe_valid[0] && en_read_BSP),
         .addr_w(BSP_wr_addr),
         .addr_r(BSP_rd_addr),
         .wdata(data_write),
@@ -351,9 +377,9 @@ module DNN_Core_debug#(
                 .DEPTH(SCRATCHPAD_W),
                 .EN_OUT_FF(1)
             ) OSP (
-                .clk(!clk),
+                .clk(clk),
                 .wen(OSP_store_en & OSP_enable[i]),
-                .ren(1'b1),
+                .ren(pipe_valid[0] && en_read_OSP),
                 .addr_w(OSP_MS_wr_addr),
                 .addr_r(OSP_rd_addr),
                 .wdata(PEOA_read[i]),
@@ -485,9 +511,9 @@ module DNN_Core_debug#(
             regs #(
                 .DATA_W(DATA_W)
             ) MLI(
-                .clk(!clk),
+                .clk(clk),
                 .rst(rst),  
-                .wen(en_load_IB),
+                .wen(en_load_IB && pipe_valid[1]),
                 .din(IB_read[i]),
                 .dout(MLI_read[i])
             );
@@ -501,9 +527,9 @@ module DNN_Core_debug#(
             regs #(
                 .DATA_W(DATA_W)
             ) MLK(
-                .clk(!clk),
+                .clk(clk),
                 .rst(rst),  
-                .wen(en_load_KSP),
+                .wen(en_load_KSP && pipe_valid[1]),
                 .din(KSP_read[i]),
                 .dout(MLK_read[i])
             );
@@ -515,9 +541,9 @@ module DNN_Core_debug#(
     regs #(
         .DATA_W(DATA_W)
     ) MLB(
-        .clk(!clk),
+        .clk(clk),
         .rst(rst),  
-        .wen(en_load_BSP),
+        .wen(en_load_BSP && pipe_valid[1]),
         .din(BSP_read),
         .dout(MLB_read)
     );
@@ -527,9 +553,9 @@ module DNN_Core_debug#(
     regs #(
         .DATA_W(DATA_W)
     ) MLFC(
-        .clk(!clk),
+        .clk(clk),
         .rst(rst),  
-        .wen(en_load_FCSP),
+        .wen(en_load_FCSP && pipe_valid[1]),
         .din(FCSP_rd_data),
         .dout(MLFC_read)
     );
@@ -541,9 +567,9 @@ module DNN_Core_debug#(
             regs #(
                 .DATA_W(DATA_W)
             ) MLO(
-                .clk(!clk),
+                .clk(clk),
                 .rst(rst),  
-                .wen(en_load_OSP),
+                .wen(en_load_OSP && pipe_valid[1]),
                 .din(OSP_read[i]),
                 .dout(MLO_read[i])
             );
@@ -557,9 +583,9 @@ module DNN_Core_debug#(
     regs #(
         .DATA_W(DATA_W)
     ) MLOM(
-        .clk(!clk),
+        .clk(clk),
         .rst(rst),  
-        .wen(en_load_OSP),
+        .wen(en_load_OSP && pipe_valid[1]),
         .din(MLOM_in),
         .dout(MLOM_read)
     );
@@ -640,7 +666,7 @@ module DNN_Core_debug#(
     end
 
     logic [63:0] EOA_en;
-    assign EOA_en = CONV_global;  // Select EOA from AGU
+    assign EOA_en = pipe_valid[2] ? CONV_global : '0;  // Select EOA from AGU
     
     logic [1:0] src_mult1;
     logic src_mult2;
@@ -718,7 +744,7 @@ module DNN_Core_debug#(
             regs #(
                 .DATA_W(DATA_W)
             ) EOA(
-                .clk(!clk),
+                .clk(clk),
                 .rst(rst),
                 .wen(EOA_en[i]),
                 .din(CONV_read[i]),
@@ -727,42 +753,22 @@ module DNN_Core_debug#(
         end
     endgenerate
 
-    logic [DATA_W-1:0] LUT_data_in;
-    logic [DATA_W-1:0] LUT_add_bias;
-    assign LUT_add_bias = (src_add_bias == '0) ? MLOM_read : MLFC_read;
-    assign LUT_data_in = LUT_add_bias + MLB_read;
+    logic [DATA_W-1:0] ACT_data_in;
+    logic [DATA_W-1:0] ACT_add_bias;
+    logic [DATA_W-1:0] ACT_NL_read;
+    assign ACT_add_bias = src_add_bias ? MLFC_read : MLOM_read;
+    // Retain the original DATA_W-bit wraparound on bias addition.
+    assign ACT_data_in = ACT_add_bias + MLB_read;
 
-    logic [DATA_W*2-1:0] LUT0_coordinated_0;    // [31:16]x1 [15:0]y1
-    logic [DATA_W*2-1:0] LUT0_coordinated_1;    // [31:16]x2 [15:0]y2
-    logic [DATA_W-1:0]   LUT0_dout;             // Latch din
-
-    logic [DATA_W*2-1:0] LUT1_coordinated_0;    // [31:16]x1 [15:0]y1
-    logic [DATA_W*2-1:0] LUT1_coordinated_1;    // [31:16]x2 [15:0]y2
-    logic [DATA_W-1:0]   LUT1_dout;             // Latch din
-
-    // Declare Lookup Table 0
-    LUTable0 #(
+    // Keep exactly the same activation pipeline boundary as the main core.
+    regs #(
         .DATA_W(DATA_W)
-    ) lkuptable0 (
-        .clk(!clk),
+    ) ACT_CONV_NL (
+        .clk(clk),
         .rst(rst),
-        .din(LUT_data_in),
-
-        .coordinated_0(LUT0_coordinated_0),
-        .coordinated_1(LUT0_coordinated_1),
-        .dout(LUT0_dout)  
-    );
-    
-    LUTable1 #(
-        .DATA_W(DATA_W)
-    ) lkuptable1 (
-        .clk(!clk),
-        .rst(rst),
-        .din(LUT_data_in),
-
-        .coordinated_0(LUT1_coordinated_0),
-        .coordinated_1(LUT1_coordinated_1),
-        .dout(LUT1_dout)    
+        .wen(pipe_valid[2]),
+        .din(ACT_data_in),
+        .dout(ACT_NL_read)
     );
     
     // =========================================================================
@@ -836,13 +842,12 @@ module DNN_Core_debug#(
             NL_slot7  <= CONV_slot7;
         end
     end
-    // sel_lut is output wire
     logic [7:0] sel_NOA;    // Select NOA (Nonlinear Operation Array)
     // Decoder stage NL
     DecoderNL decNL(
         .slot5(NL_slot5),       
 
-        .sel_lut(sel_lut),      // 0: LUT0 1: LUT1
+        .sel_lut(),            // Former LUT-select bit ignored: ReLU only
         .sel_NOA(sel_NOA)       // Select 0-63 EOA_read to NOA
     );
 
@@ -853,9 +858,9 @@ module DNN_Core_debug#(
             regs #(
                 .DATA_W(DATA_W)
             ) NEOA(
-                .clk(!clk),
+                .clk(clk),
                 .rst(rst),  
-                .wen(1'b1),
+                .wen(pipe_valid[3]),
                 .din(EOA_read[i]),
                 .dout(NEOA_read[i])
             );
@@ -868,44 +873,26 @@ module DNN_Core_debug#(
     regs #(
         .DATA_W(DATA_W)
     ) NOA (
-        .clk(!clk),
+        .clk(clk),
         .rst(rst),  
-        .wen(1'b1),
+        .wen(pipe_valid[3]),
         .din(NOA_data_wr),
         .dout(NOA_data_rd)  
     );
 
-    // Select lut
-    logic [DATA_W*2-1:0] LUT_coordinated_0;
-    logic [DATA_W*2-1:0] LUT_coordinated_1;
-    logic [DATA_W-1:0]   LUT_dout;
-
-    assign LUT_coordinated_0 = (sel_lut == 0) ? LUT0_coordinated_0 : LUT1_coordinated_0;
-    assign LUT_coordinated_1 = (sel_lut == 0) ? LUT0_coordinated_1 : LUT1_coordinated_1;
-    assign LUT_dout          = (sel_lut == 0) ? LUT0_dout : LUT1_dout;
-
-    Linear_Inter #(
-        .DATA_W(DATA_W),
-        .DECIMAL_BIT(DECIMAL_BIT)
-    ) LI (
-        .x(LUT_dout),
-        .x1(LUT_coordinated_0[31:16]),
-        .y1(LUT_coordinated_0[15:0]),
-        .x2(LUT_coordinated_1[31:16]),
-        .y2(LUT_coordinated_1[15:0]),
-
-        .y(LI_data_out)
-    );
+    // Signed fixed-point ReLU, matching the production core.
+    logic [DATA_W-1:0] relu_data_out;
+    assign relu_data_out = ACT_NL_read[DATA_W-1] ? '0 : ACT_NL_read;
 
     //Declare NOL (Nonlinear Operation Latch)
     logic [DATA_W-1:0] NOL_read;
     regs #(
         .DATA_W(DATA_W)
     ) NOL(
-        .clk(!clk),
+        .clk(clk),
         .rst(rst),
-        .wen(1'b1),
-        .din(LI_data_out),
+        .wen(pipe_valid[3]),
+        .din(relu_data_out),
         .dout(NOL_read)
     );
 
@@ -982,9 +969,9 @@ module DNN_Core_debug#(
     regs #(
         .DATA_W(DATA_W)
     ) NFC (
-        .clk(!clk),
+        .clk(clk),
         .rst(rst),
-        .wen(1'b1),
+        .wen(pipe_valid[3]),
         .din(NFC_data_wr),
         .dout(NFC_data_rd)
     );
@@ -1075,9 +1062,9 @@ module DNN_Core_debug#(
                 regs #(
                     .DATA_W(DATA_W)
                 ) PEOA(
-                    .clk(!clk),
+                    .clk(clk),
                     .rst(rst),  
-                    .wen(1'b1),
+                    .wen(pipe_valid[4]),
                     .din(NEOA_read[i-1]),
                     .dout(PEOA_read[i])  
                 );
@@ -1085,9 +1072,9 @@ module DNN_Core_debug#(
                 regs #(
                     .DATA_W(DATA_W)
                 ) PEOA(
-                    .clk(!clk),
+                    .clk(clk),
                     .rst(rst),  
-                    .wen(1'b1),
+                    .wen(pipe_valid[4]),
                     .din('0),
                     .dout(PEOA_read[i])
                 );
@@ -1103,9 +1090,9 @@ module DNN_Core_debug#(
     regs #(
         .DATA_W(DATA_W)
     ) POA(
-        .clk(!clk),
+        .clk(clk),
         .rst(rst),  
-        .wen(1'b1),
+        .wen(pipe_valid[4]),
         .din(POA_data_wr),
         .dout(POA_data_rd)
     );
@@ -1115,9 +1102,9 @@ module DNN_Core_debug#(
     regs #(
         .DATA_W(DATA_W)
     ) POL(
-        .clk(!clk),
+        .clk(clk),
         .rst(rst),  
-        .wen(1'b1),
+        .wen(pipe_valid[4]),
         .din(NOL_read),  
         .dout(POL_read)
     );
@@ -1129,6 +1116,7 @@ module DNN_Core_debug#(
     logic [DATA_W-1:0] POM_read;        // Output of Max Pooling Block (Processing Output Management)
 
     logic [DATA_W-1:0] OB_data_rd;
+    logic [DATA_W-1:0] OB_mem_data_rd;
     logic [DATA_W-1:0] MEM_data_rd;
 
     // Keep pooling semantics consistent with the main signed fixed-point core.
@@ -1156,9 +1144,9 @@ module DNN_Core_debug#(
         regs #(
             .DATA_W(DATA_W)
         ) POM(
-            .clk(!clk),
+            .clk(clk),
             .rst(rst),  
-            .wen(1'b1),
+            .wen(pipe_valid[4]),
             .din(max_pool_result),
             .dout(POM_read)  
         );
@@ -1255,7 +1243,7 @@ module DNN_Core_debug#(
         .MST6(MST6),
         .MST7(MST7)
     ) decMS (
-        .slot7(MS_slot7),
+        .slot7(pipe_valid[5] ? MS_slot7 : 7'b0),
 
         .en_store_OB(OB_store_en),
         .en_store_OSP(OSP_store_en),
@@ -1301,20 +1289,25 @@ module DNN_Core_debug#(
         endcase
     end
 
+    // PL consumes the asynchronous OB read. An older instruction may commit
+    // to this address on the same edge, so forward its complete MS write data.
+    assign OB_data_rd = (OB_store_en && (OB_MS_wr_addr == OB_PL_rd_addr))
+                      ? OB_data_wr : OB_mem_data_rd;
+
     // Declare OB memory
     mem #(
         .DATA_W(DATA_W),
         .DEPTH(SCRATCHPAD_W),
         .EN_OUT_FF(0)
     ) OB (
-        .clk(!clk),
+        .clk(clk),
         .wen(OB_store_en),
         .ren(1'b1),
 
         .addr_w(OB_MS_wr_addr),  
-        .addr_r(OB_NL_rd_addr),
+        .addr_r(OB_PL_rd_addr),
         .wdata(OB_data_wr),
-        .rdata(OB_data_rd)
+        .rdata(OB_mem_data_rd)
     );
     assign OB_data_read = OB_data_rd;   //Output
 
@@ -1324,7 +1317,7 @@ module DNN_Core_debug#(
         .DEPTH(SCRATCHPAD_W),
         .EN_OUT_FF(1)
     ) OB_MC (
-        .clk(!clk),
+        .clk(clk),
         .wen(OB_store_en),
         .ren(en_C_read_OB),  
         .addr_w(OB_MS_wr_addr),
@@ -1337,9 +1330,9 @@ module DNN_Core_debug#(
     regs #(
         .DATA_W(DATA_W)
     ) MEM (
-        .clk(!clk),
+        .clk(clk),
         .rst(rst),
-        .wen(1'b1),
+        .wen(pipe_valid[5]),
         .din(MEM_data_wr),
         .dout(MEM_data_rd)  
     );

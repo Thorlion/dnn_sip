@@ -54,6 +54,7 @@ module Mode_ctrller_4 #(
             vsync_out <= 0;
             hsync_out <= 0;
             end_flag <= 0;
+            start_DNN_core <= 0;
         end
         else begin
             case (state)
@@ -66,16 +67,16 @@ module Mode_ctrller_4 #(
                     
                     enable_PC <= 1;
                     vsync_out <= 0;
-                    hsync_out = 0;
+                    hsync_out <= 0;
                     end_flag <= 0;
                     
                 end
                 
                 // Tạo tín hiệu đồng bộ dọc (vẫn sử dụng nhưng hiện tại chưa có nhiều tác dụng)
                 WAIT_VSYNC: begin
-                    end_flag = 0;
+                    end_flag <= 0;
                     if(opcode == VSYNC) begin
-                        vsync_out = 1;
+                        vsync_out <= 1;
                         state <= WAIT_VSYNC_IN;
                         enable_PC <= 0;
                     end
@@ -85,7 +86,7 @@ module Mode_ctrller_4 #(
                 // Chờ tín hiệu đồng bộ dọc (vẫn sử dụng nhưng hiện tại chưa có nhiều tác dụng)
                 WAIT_VSYNC_IN: begin
                     if(vsync_in) begin
-                        vsync_out = 0;
+                        vsync_out <= 0;
                         state <= WAIT_TO_V_TRANSFER;
                         enable_PC <= 0;
                     end
@@ -102,7 +103,7 @@ module Mode_ctrller_4 #(
                     if(opcode == VSYNC) begin
                         vsync_out <= 1;
                         done_vtransfer <= 1;
-                        enable_PC = 0;
+                        enable_PC <= 0;
                         state <= WAIT_VSYNC_END_IN;
                     end     
                 
@@ -122,9 +123,9 @@ module Mode_ctrller_4 #(
                     if (opcode == HSYNC) begin
                         // chỉ có DSIP đầu cột mới cần xử lý tiếp HSYNC
 //                        if(IS_FIRST_COL) begin
-                            hsync_out = 1;
+                            hsync_out <= 1;
                             state <= WAIT_HSYNC_IN;
-                            enable_PC = 0;
+                            enable_PC <= 0;
 //                        end
                         // nếu k phải DSIP đầu cột -> nhảy tới WAIT_HSYNC_END_IN và đợi hsync_in, không cần tạo hsync_out
 //                        else begin
@@ -143,20 +144,20 @@ module Mode_ctrller_4 #(
                 
                 // Chờ cho DNN xử lý xong
                 WAIT_CORE_DONE: begin
-                    if(DNN_done) begin
-                        enable_PC = 1;
+                    start_DNN_core <= 0;
+                    if(!start_DNN_core && DNN_done) begin
+                        enable_PC <= 1;
                         state <= WAIT_HSYNC;
                     end
-                    else start_DNN_core <= 0;
                 end
                 
                 // State này dùng để báo cho các ASIP khác rằng mình đã sẵn sàng cho quá trình Transferring data
                 WAIT_HSYNC: begin
                     // Nếu không muốn cho DNN chạy nữa thì tới giai đoạn truyền data sang OM mới
                     if(opcode == HSYNC) begin
-                        hsync_out = 1;
+                        hsync_out <= 1;
                         state <= WAIT_HSYNC_IN;
-                        enable_PC = 0;
+                        enable_PC <= 0;
                     end
                     
                     // Nếu DNN vẫn cần xử lý tiếp thì quay về stage WAIT_VSYNC
@@ -168,9 +169,9 @@ module Mode_ctrller_4 #(
                 // Được sử dụng để đảm bảo rằng toàn bộ ASIP đã sẵn sàng cho quá trình Transferring data
                 WAIT_HSYNC_IN: begin
                     if(hsync_in) begin
-                        hsync_out = 0;
+                        hsync_out <= 0;
                         state <= WAIT_TO_TRANSFER;
-                        enable_PC = 0;
+                        enable_PC <= 0;
                     end                    
                 end
                 
@@ -188,7 +189,7 @@ module Mode_ctrller_4 #(
                     if(opcode == HSYNC) begin
                         hsync_out <= 1;
                         done_transfer <= 1;
-                        enable_PC = 0;
+                        enable_PC <= 0;
                         state <= WAIT_HSYNC_END_IN;
                     end                 
                 end
