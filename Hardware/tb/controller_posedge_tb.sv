@@ -45,6 +45,8 @@ module controller_posedge_tb;
     integer tail=0,head=0,ref_pc=0,issued=0,retired=0,cycles=0,launches=0;
     integer n=0,i,ref_init,op,rd,ra,rb,rt,imm,next_pc,core_ticks=0;
     integer branch_stalls=0,cbr_taken=0,cbr_not_taken=0;
+    integer data_stalls=0,raw_ra=0,raw_rb=0,raw_rd=0,raw_rt=0;
+    integer ignored_rb=0,ignored_rd=0,ignored_ra=0,r0_exclusions=0,dual_raw=0;
     reg [31:0] ins,answer,random_state=32'h617e51;
     reg [67:0] req;
     reg [31:0] source_addr,dest_addr;
@@ -54,6 +56,10 @@ module controller_posedge_tb;
     reg [31:0] retire_data,held_pc,held_alu;
     reg [7:0] stalled_pc;
     bit expected_branch_wait,branch_stalled;
+    bit expected_data_wait,data_stalled;
+    reg [3:0] used_sources,raw_sources;
+    reg [31:0] decode_ins,stalled_ins,producer_data;
+    reg [4:0] producer_rd;
 
     function [31:0] enc(input integer opc,input integer d,input integer a,
                         input integer b,input integer t);
@@ -68,8 +74,21 @@ module controller_posedge_tb;
     function [211:0] instruction_at(input [31:0] a);
         instruction_at={20'h517a3,{6{a}}};
     endfunction
+    // Independent ISA source mask, not copied from the DUT's selector logic.
+    // Bits 0..3 represent RA, RB, RD, RTEMP; CBR is checked separately.
+    function [3:0] source_mask(input [31:0] x);
+        begin
+            if(x[31:26]<=4) source_mask=4'b0011;
+            else if(x[31:26]<=13) source_mask=4'b0001;
+            else if(x[31:26]>=32 && x[31:26]<=39) source_mask=4'b1111;
+            else source_mask=0;
+        end
+    endfunction
     task append(input [31:0] x);
-        begin prog[n]=x; n=n+1; end
+        begin
+            if(n>=256) $fatal(1,"Test program exceeds instruction memory");
+            prog[n]=x; n=n+1;
+        end
     endtask
 
     always @(posedge clk) begin
@@ -86,8 +105,36 @@ module controller_posedge_tb;
                                  (pipe_rd[0]==prog[dut.PC][20:16]);
             if(dut.branch_wait !== expected_branch_wait)
                 $fatal(1,"CBR dependency-stall mismatch PC=%0d",dut.PC);
+            decode_ins=prog[dut.PC]; used_sources=source_mask(decode_ins);
+            raw_sources=used_sources & {
+                (pipe_rd[0]==decode_ins[10:6]),(pipe_rd[0]==decode_ins[25:21]),
+                (pipe_rd[0]==decode_ins[15:11]),(pipe_rd[0]==decode_ins[20:16])};
+            expected_data_wait=pipe_wen[0] && pipe_rd[0]!=0 && (|raw_sources);
+            if({dut.data_use_rtemp,dut.data_use_rd,dut.data_use_rb,dut.data_use_ra} !== used_sources ||
+               dut.data_wait !== expected_data_wait)
+                $fatal(1,"Data source-mask/dependency mismatch PC=%0d",dut.PC);
+            data_stalled=dut.data_wait;
+            stalled_ins=decode_ins; producer_rd=pipe_rd[0]; producer_data=pipe_data[0];
             branch_stalled=dut.branch_wait;
             stalled_pc=dut.PC;
+            if(data_stalled) begin
+                data_stalls=data_stalls+1;
+                if(raw_sources[0]) raw_ra=raw_ra+1;
+                if(raw_sources[1]) raw_rb=raw_rb+1;
+                if(raw_sources[2]) raw_rd=raw_rd+1;
+                if(raw_sources[3]) raw_rt=raw_rt+1;
+                if(raw_sources[1:0]==2'b11) dual_raw=dual_raw+1;
+                if(dut.issue_valid || dut.mode_opcode!==6'b111111)
+                    $fatal(1,"Dependent data instruction issued during stall");
+            end
+            if(dut.issue_valid && pipe_wen[0]) begin
+                if(pipe_rd[0]==0) r0_exclusions=r0_exclusions+1;
+                else begin
+                    if(!used_sources[0] && pipe_rd[0]==decode_ins[20:16]) ignored_ra=ignored_ra+1;
+                    if(!used_sources[1] && pipe_rd[0]==decode_ins[15:11]) ignored_rb=ignored_rb+1;
+                    if(!used_sources[2] && pipe_rd[0]==decode_ins[25:21]) ignored_rd=ignored_rd+1;
+                end
+            end
             if(branch_stalled) begin
                 branch_stalls=branch_stalls+1;
                 if(dut.issue_valid || dut.mode_opcode!==6'b111111)
@@ -113,6 +160,14 @@ module controller_posedge_tb;
                 ins=prog[ref_pc]; op=ins[31:26]; rd=ins[25:21]; ra=ins[20:16];
                 rb=ins[15:11]; rt=ins[10:6]; imm=ins[15:0];
                 next_pc=ref_pc+1; answer=0;
+                if(used_sources[0] && dut.ra_forwarded !== ref_rf[ra])
+                    $fatal(1,"WB/RF RA operand mismatch PC=%0d",dut.PC);
+                if(used_sources[1] && dut.rb_forwarded !== ref_rf[rb])
+                    $fatal(1,"WB/RF RB operand mismatch PC=%0d",dut.PC);
+                if(used_sources[2] && dut.rd_forwarded !== ref_rf[rd])
+                    $fatal(1,"WB/RF RD address operand mismatch PC=%0d",dut.PC);
+                if(used_sources[3] && dut.rtemp_forwarded !== ref_rf[rt])
+                    $fatal(1,"WB/RF RTEMP address operand mismatch PC=%0d",dut.PC);
                 case(op)
                     0: answer=ref_rf[ra]+ref_rf[rb];
                     1: answer=ref_rf[ra]-ref_rf[rb];
@@ -194,6 +249,14 @@ module controller_posedge_tb;
                 if(core_ticks==0) dnn_done<=1;
             end
             #1;
+            if(data_stalled) begin
+                if(dut.PC !== stalled_pc || dut.instruction !== stalled_ins ||
+                   dut.rf_wen_reg1!==0 || dut.type_access_reg!==0)
+                    $fatal(1,"Data bubble advanced PC/instruction or issued a side effect");
+                if(dut.data_wait || !dut.rf_wen_reg2 || dut.rd_reg2 !== producer_rd ||
+                   dut.alu_result_reg !== producer_data)
+                    $fatal(1,"Data bubble failed to drain EX into WB in one cycle");
+            end
             if(branch_stalled) begin
                 if(dut.PC !== stalled_pc || dut.instruction[31:26]!==6'd20 ||
                    dut.rf_wen_reg1!==0 || dut.type_access_reg!==0)
@@ -227,8 +290,24 @@ module controller_posedge_tb;
             if(op<7 || op==13) append(enc(op,rd,ra,rb,0));
             else append(enc_i(op,rd,ra,(op==7)?i%32:random_state[15:0]));
         end
-        // EX must win over an older WB writer to the same register, including
-        // a newest zero result. Poison instructions expose wrong-path issue.
+        // Real RAWs, dual-source RAWs, newest-zero priority, and MUL consumers.
+        append(enc_i(14,24,0,3)); append(enc_i(14,25,0,4));
+        append(enc(2,26,24,25,0)); append(enc(0,27,26,26,0));
+        append(enc_i(15,26,0,1)); append(enc_i(14,26,0,0));
+        append(enc(0,28,26,0,0));
+        append(enc_i(14,26,0,3)); append(enc_i(10,26,26,7));
+        append(enc(0,28,0,26,0));
+        // These matching encoded fields are not read operands: no bubble.
+        append(enc_i(14,26,0,9)); append(enc_i(8,27,0,(26<<11)+5));
+        append(enc_i(14,26,0,9)); append(enc_i(14,27,26,6));
+        append(enc_i(14,26,0,9)); append(enc_i(15,27,26,3));
+        append(enc_i(14,26,0,9)); append(enc(0,26,0,0,0));
+        append(enc_i(14,0,0,5)); append(enc(0,28,0,0,0));
+        // An independent instruction needs no bubble; WB still forwards.
+        append(enc_i(14,26,0,9)); append(enc(0,27,0,0,0));
+        append(enc(0,28,26,0,0));
+        // The newest EX writer must replace an older WB writer after draining
+        // to WB, including a newest zero. Poison instructions expose bad issue.
         append(enc_i(14,21,0,1)); append(enc_i(14,21,0,0));
         append(enc_i(20,0,21,n+2)); append(enc_i(14,22,0,123));
         append(enc_i(14,21,0,0)); append(enc_i(14,21,0,9));
@@ -266,6 +345,13 @@ module controller_posedge_tb;
         append(enc_i(14,10,0,3)); append(enc_i(14,11,0,0));
         append(enc_i(15,12,0,1)); append(enc_i(14,13,0,27));
         append(enc(35,10,11,12,13));
+        // Explicitly exercise adjacent producers on each memory-address port.
+        append(enc_i(15,12,0,1)); append(enc_i(14,13,0,0));
+        append(enc_i(14,11,0,0));
+        append(enc_i(15,10,0,1)); append(enc(32,10,11,12,13)); // RD
+        append(enc_i(14,11,0,29)); append(enc(32,10,11,12,13)); // RA
+        append(enc_i(15,12,0,1)); append(enc(32,10,11,12,13)); // RB
+        append(enc_i(14,13,0,33)); append(enc(32,10,11,12,13)); // RTEMP
         append(enc(22,0,0,0,0)); append(enc(21,0,0,0,0));
         append(enc_i(14,20,0,93)); // Must wait for DNN completion, not execute while held.
         append(enc(22,0,0,0,0)); append(enc(21,0,0,0,0));
@@ -278,7 +364,7 @@ module controller_posedge_tb;
         if(issued!=0) $fatal(1,"Controller executed before start");
         #1; start=1; @(negedge clk); #1; start=0;
         wait(end_flag); #2;
-        if(head!=tail || tail!=12 || launches!=2 || dut.rf.mem[20] !== 100 ||
+        if(head!=tail || tail!=16 || launches!=2 || dut.rf.mem[20] !== 100 ||
            dut.rf.mem[31] !== 0 || dut.rf.mem[22] !== 127)
             $fatal(1,"Counts/final state mismatch head=%0d tail=%0d launches=%0d r20=%h",head,tail,launches,dut.rf.mem[20]);
         repeat(8) @(negedge clk);
@@ -287,15 +373,19 @@ module controller_posedge_tb;
         // retains architectural RF state, just as the physical controller does.
         ref_pc=0; #1; start=1; @(negedge clk); #1; start=0;
         wait(end_flag); #2;
-        if(head!=tail || tail!=23 || launches!=4 || dut.rf.mem[20] !== 100 ||
+        if(head!=tail || tail!=31 || launches!=4 || dut.rf.mem[20] !== 100 ||
            dut.rf.mem[31] !== 0 || dut.rf.mem[22] !== 127)
             $fatal(1,"Restart state/count mismatch head=%0d tail=%0d launches=%0d",head,tail,launches);
         repeat(8) @(negedge clk);
         if(dut.issue_valid || dut.start_flag || dut.PC!=0) $fatal(1,"Restart END did not stop fetch");
         if(branch_stalls!=16 || cbr_taken==0 || cbr_not_taken==0)
             $fatal(1,"Branch coverage/stall count mismatch stalls=%0d taken=%0d not_taken=%0d",branch_stalls,cbr_taken,cbr_not_taken);
+        if(raw_ra==0 || raw_rb==0 || raw_rd==0 || raw_rt==0 || dual_raw==0 ||
+           ignored_ra==0 || ignored_rb==0 || ignored_rd==0 || r0_exclusions==0)
+            $fatal(1,"Data RAW/source-mask coverage incomplete");
         $display("CONTROLLER_RESULT issued=%0d retired=%0d transfers=%0d launches=%0d branch_stalls=%0d cbr_taken=%0d cbr_not_taken=%0d errors=0",issued,retired,head,launches,branch_stalls,cbr_taken,cbr_not_taken);
-        $display("TEST_PASS: rising-edge controller, EX/WB ALU forwarding, WB-only branches with one-cycle dependency bubbles, memory packets, backpressure, start/drain/END and restart");
+        $display("CONTROLLER_RAW_RESULT stalls=%0d ra=%0d rb=%0d rd=%0d rtemp=%0d dual=%0d ignored_ra=%0d ignored_rb=%0d ignored_rd=%0d r0_exclusions=%0d errors=0",data_stalls,raw_ra,raw_rb,raw_rd,raw_rt,dual_raw,ignored_ra,ignored_rb,ignored_rd,r0_exclusions);
+        $display("TEST_PASS: rising-edge controller, WB-only data/branch forwarding with selective one-cycle RAW bubbles, memory packets, backpressure, start/drain/END and restart");
         $finish;
     end
     initial begin

@@ -5,7 +5,7 @@ module MC_alu #(
     input  logic [DATA_W-1:0] operand_2,   // RB(0), imm16(1), 0(2), 1(3), imm16<<16(4)
     input  logic [2:0] alu_op,
     output logic [DATA_W-1:0] result
-);
+); 
     logic [DATA_W*2-1:0] mult_res_temp;
     
     always_comb begin

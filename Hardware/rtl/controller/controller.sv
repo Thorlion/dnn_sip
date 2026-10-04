@@ -96,6 +96,8 @@ module Controller #(
     logic fetch_memory_wait;
     logic end_drain;
     logic branch_wait;
+    logic data_wait;
+    logic data_use_ra, data_use_rb, data_use_rd, data_use_rtemp;
     always_ff @(posedge clk or posedge rst) begin
         if(rst) begin
             PC  <= '0;
@@ -199,16 +201,25 @@ module Controller #(
         .rtemp_rd_data(rtemp_rd_data)
     );
 
-    // Decode sees pre-edge RF contents. Forward the newest EX result, then
-    // pending WB, for ALU operands, branches and all four memory-address ports.
-    assign ra_forwarded = (rf_wen_reg1 && rd_reg1 != 0 && rd_reg1 == ra) ? alu_result :
-                          (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == ra) ? alu_result_reg : ra_rd_data;
-    assign rb_forwarded = (rf_wen_reg1 && rd_reg1 != 0 && rd_reg1 == rb) ? alu_result :
-                          (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == rb) ? alu_result_reg : rb_rd_data;
-    assign rd_forwarded = (rf_wen_reg1 && rd_reg1 != 0 && rd_reg1 == rd) ? alu_result :
-                          (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == rd) ? alu_result_reg : rd_rd_data;
-    assign rtemp_forwarded = (rf_wen_reg1 && rd_reg1 != 0 && rd_reg1 == rtemp) ? alu_result :
-                            (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == rtemp) ? alu_result_reg : rtemp_rd_data;
+    // Stall only true EX read-after-write dependencies. Ignore unused fields:
+    // immediate bits overlap RB/RTEMP, and an ALU destination is not a source.
+    // Memory transfers read all four registers to form their address packet.
+    assign data_use_ra = (rf_wen && alu_oper1_sel == 0) || type_access != 0;
+    assign data_use_rb = (rf_wen && alu_oper2_sel == 0) || type_access != 0;
+    assign data_use_rd = type_access != 0;
+    assign data_use_rtemp = type_access != 0;
+    assign data_wait = rf_wen_reg1 && rd_reg1 != 0 &&
+                       ((data_use_ra && rd_reg1 == ra) ||
+                        (data_use_rb && rd_reg1 == rb) ||
+                        (data_use_rd && rd_reg1 == rd) ||
+                        (data_use_rtemp && rd_reg1 == rtemp));
+
+    // During the bubble EX drains into ALU_REG; decode then forwards registered
+    // WB data. No live ALU result feeds back into the operand/address registers.
+    assign ra_forwarded = (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == ra) ? alu_result_reg : ra_rd_data;
+    assign rb_forwarded = (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == rb) ? alu_result_reg : rb_rd_data;
+    assign rd_forwarded = (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == rd) ? alu_result_reg : rd_rd_data;
+    assign rtemp_forwarded = (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == rtemp) ? alu_result_reg : rtemp_rd_data;
 
     // A dependent CBR stays at decode for one cycle while its EX producer
     // captures into ALU_REG. Only issue/PC stall; EX/WB continue draining.
@@ -359,7 +370,7 @@ module Controller #(
     assign end_drain = (instruction[31:26] == 6'b010111) &&
                        ((rf_wen_reg1 && rd_reg1 != 0) || (rf_wen_reg2 && rd_reg2 != 0));
     assign issue_valid = start_flag && PC_en && !end_flag && !fetch_memory_wait &&
-                         !end_drain && !branch_wait;
+                         !end_drain && !branch_wait && !data_wait;
 
     Mem_ctrl #(
         .BASE_DATA_OM(BASE_DATA_OM),
