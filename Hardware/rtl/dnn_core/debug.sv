@@ -1131,8 +1131,9 @@ module DNN_Core_debug#(
     logic [DATA_W-1:0] OB_data_rd;
     logic [DATA_W-1:0] MEM_data_rd;
 
-    logic [DATA_W-1:0] max_oper_1;
-    logic [DATA_W-1:0] max_oper_2;
+    // Keep pooling semantics consistent with the main signed fixed-point core.
+    logic signed [DATA_W-1:0] max_oper_1;
+    logic signed [DATA_W-1:0] max_oper_2;
 
     // Select Operand for Max Pooling
     always_comb begin

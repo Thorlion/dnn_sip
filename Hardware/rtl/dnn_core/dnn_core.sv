@@ -1194,8 +1194,9 @@ module DNN_Core#(
     logic [DATA_W-1:0] OB_data_rd;
     logic [DATA_W-1:0] MEM_data_rd;
 
-    logic [DATA_W-1:0] max_oper_1;
-    logic [DATA_W-1:0] max_oper_2;
+    // Activations may be negative; pooling must compare signed fixed-point data.
+    logic signed [DATA_W-1:0] max_oper_1;
+    logic signed [DATA_W-1:0] max_oper_2;
 
     // Select Operand for Max Pooling
     always_comb begin

@@ -15,6 +15,7 @@ module mac #(
 
     output logic signed [DATA_W-1:0]    acc_result          // 16-bit fixed-point OUTPUT
 );
+    localparam logic signed [DATA_W-1:0] FIXED_ONE = 1 << DECIMAL_BIT;
     logic signed [DATA_W-1:0]   mult_oper_1, mult_oper_2;
     logic signed [DATA_W*2-1:0] mult_result;    // STORE RESULT OF MULTIPLICATION
 
@@ -30,7 +31,7 @@ module mac #(
 
         // SELECT OPERAND 2 FOR MULTIPLICATION
         case (mult_sel_2)
-            1'b0: mult_oper_2 = 16'b1;              // 1
+            1'b0: mult_oper_2 = FIXED_ONE;          // Fixed-point unity
             1'b1: mult_oper_2 = MLKout;             // MLIout
             default: mult_oper_2 = '0;
         endcase
