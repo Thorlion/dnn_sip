@@ -1,5 +1,8 @@
 # Rising-edge controller retiming and timing results
 
+This report documents the pre-branch-stall baseline. For the newer WB-only
+branch forwarding change and current timing, see BRANCH_WB_TIMING.md.
+
 Applied to the main working directory on 2026-10-04, on top of the existing
 rising-edge DNN/memory changes and the ReLU-only activation experiment.
 Production assembly and compiled instruction images are unchanged.

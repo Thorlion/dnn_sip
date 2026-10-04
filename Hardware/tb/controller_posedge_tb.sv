@@ -44,6 +44,7 @@ module controller_posedge_tb;
     bit incoming[0:31];
     integer tail=0,head=0,ref_pc=0,issued=0,retired=0,cycles=0,launches=0;
     integer n=0,i,ref_init,op,rd,ra,rb,rt,imm,next_pc,core_ticks=0;
+    integer branch_stalls=0,cbr_taken=0,cbr_not_taken=0;
     reg [31:0] ins,answer,random_state=32'h617e51;
     reg [67:0] req;
     reg [31:0] source_addr,dest_addr;
@@ -51,6 +52,8 @@ module controller_posedge_tb;
     bit commit,retire_we;
     reg [4:0] retire_rd;
     reg [31:0] retire_data,held_pc,held_alu;
+    reg [7:0] stalled_pc;
+    bit expected_branch_wait,branch_stalled;
 
     function [31:0] enc(input integer opc,input integer d,input integer a,
                         input integer b,input integer t);
@@ -76,6 +79,20 @@ module controller_posedge_tb;
             for(ref_init=0;ref_init<32;ref_init=ref_init+1) ref_rf[ref_init]=0;
             pipe_wen[0]=0; pipe_wen[1]=0; ref_pc=0;
         end else begin
+            // The independent expected EX packet was created only when the
+            // reference accepted an instruction at the preceding edge.
+            expected_branch_wait=(prog[dut.PC][31:26]==6'd20) &&
+                                 pipe_wen[0] && (pipe_rd[0]!=0) &&
+                                 (pipe_rd[0]==prog[dut.PC][20:16]);
+            if(dut.branch_wait !== expected_branch_wait)
+                $fatal(1,"CBR dependency-stall mismatch PC=%0d",dut.PC);
+            branch_stalled=dut.branch_wait;
+            stalled_pc=dut.PC;
+            if(branch_stalled) begin
+                branch_stalls=branch_stalls+1;
+                if(dut.issue_valid || dut.mode_opcode!==6'b111111)
+                    $fatal(1,"Dependent CBR issued or reached mode control during stall");
+            end
             // Check the actual pending WB packet before the rising-edge write.
             retire_we=pipe_wen[1]; retire_rd=pipe_rd[1]; retire_data=pipe_data[1];
             if(dut.rf_wen_reg2 !== retire_we)
@@ -114,7 +131,13 @@ module controller_posedge_tb;
                     14: answer=imm;
                     15: answer=imm << 16;
                     19: next_pc=imm;
-                    20: if(ref_rf[ra]!=0) next_pc=imm;
+                    20: begin
+                        if(dut.branch_ra_data !== ref_rf[ra])
+                            $fatal(1,"CBR WB/RF operand mismatch PC=%0d",dut.PC);
+                        if(ref_rf[ra]!=0) begin
+                            next_pc=imm; cbr_taken=cbr_taken+1;
+                        end else cbr_not_taken=cbr_not_taken+1;
+                    end
                 endcase
                 if(op<16) begin
                     pipe_wen[0]=1; pipe_rd[0]=rd; pipe_data[0]=answer;
@@ -171,6 +194,15 @@ module controller_posedge_tb;
                 if(core_ticks==0) dnn_done<=1;
             end
             #1;
+            if(branch_stalled) begin
+                if(dut.PC !== stalled_pc || dut.instruction[31:26]!==6'd20 ||
+                   dut.rf_wen_reg1!==0 || dut.type_access_reg!==0)
+                    $fatal(1,"Branch bubble advanced PC or issued a side effect");
+                if(dut.branch_wait || !dut.rf_wen_reg2 ||
+                   dut.rd_reg2 !== prog[stalled_pc][20:16] ||
+                   dut.alu_result_reg !== ref_rf[prog[stalled_pc][20:16]])
+                    $fatal(1,"Branch stall froze its producer or failed to drain into WB");
+            end
             if(retire_we && retire_rd!=0 && dut.rf.mem[retire_rd] !== retire_data)
                 $fatal(1,"RF rising-edge commit mismatch");
             if(dut.rf.mem[0] !== 0) $fatal(1,"R0 changed");
@@ -195,6 +227,30 @@ module controller_posedge_tb;
             if(op<7 || op==13) append(enc(op,rd,ra,rb,0));
             else append(enc_i(op,rd,ra,(op==7)?i%32:random_state[15:0]));
         end
+        // EX must win over an older WB writer to the same register, including
+        // a newest zero result. Poison instructions expose wrong-path issue.
+        append(enc_i(14,21,0,1)); append(enc_i(14,21,0,0));
+        append(enc_i(20,0,21,n+2)); append(enc_i(14,22,0,123));
+        append(enc_i(14,21,0,0)); append(enc_i(14,21,0,9));
+        append(enc_i(20,0,21,n+2)); append(enc_i(14,31,0,16'hdead));
+        // The low 32-bit multiply result can be zero for nonzero operands.
+        append(enc_i(15,21,0,1)); append(enc(2,21,21,21,0));
+        append(enc_i(20,0,21,n+2)); append(enc_i(14,22,0,124));
+        append(enc_i(15,21,0,16'h8000)); append(enc_i(10,21,21,1));
+        append(enc_i(20,0,21,n+2)); append(enc_i(14,31,0,16'hdead));
+        // R0 is not a producer; unrelated EX writes must not stall a CBR.
+        append(enc_i(14,0,0,5)); append(enc_i(20,0,0,n+2));
+        append(enc_i(14,22,0,125));
+        append(enc_i(14,21,0,0)); append(enc_i(14,23,0,7));
+        append(enc_i(20,0,21,n+2)); append(enc_i(14,22,0,126));
+        // WB forwarding without an EX dependency, plus unconditional BR.
+        append(enc_i(14,21,0,1)); append(enc_i(14,23,0,8));
+        append(enc_i(20,0,21,n+2)); append(enc_i(14,31,0,16'hdead));
+        append(enc_i(14,23,0,9)); append(enc_i(19,0,23,n+2));
+        append(enc_i(14,31,0,16'hdead));
+        // A held CBR issues once; the next CBR does not inherit its stall.
+        append(enc_i(14,21,0,0)); append(enc_i(20,0,21,n+2));
+        append(enc_i(20,0,21,n+2)); append(enc_i(14,22,0,127));
         append(enc_i(15,10,0,1)); append(enc_i(14,11,0,17));
         append(enc_i(15,12,0,1)); append(enc_i(14,13,0,(63<<9)+5));
         append(enc(32,10,11,12,13)); append(enc(32,10,11,12,13));
@@ -222,7 +278,8 @@ module controller_posedge_tb;
         if(issued!=0) $fatal(1,"Controller executed before start");
         #1; start=1; @(negedge clk); #1; start=0;
         wait(end_flag); #2;
-        if(head!=tail || tail!=12 || launches!=2 || dut.rf.mem[20] !== 100 || dut.rf.mem[31] !== 0)
+        if(head!=tail || tail!=12 || launches!=2 || dut.rf.mem[20] !== 100 ||
+           dut.rf.mem[31] !== 0 || dut.rf.mem[22] !== 127)
             $fatal(1,"Counts/final state mismatch head=%0d tail=%0d launches=%0d r20=%h",head,tail,launches,dut.rf.mem[20]);
         repeat(8) @(negedge clk);
         if(dut.issue_valid || dut.start_flag || dut.PC!=0) $fatal(1,"END did not stop fetch");
@@ -230,12 +287,15 @@ module controller_posedge_tb;
         // retains architectural RF state, just as the physical controller does.
         ref_pc=0; #1; start=1; @(negedge clk); #1; start=0;
         wait(end_flag); #2;
-        if(head!=tail || tail!=23 || launches!=4 || dut.rf.mem[20] !== 100)
+        if(head!=tail || tail!=23 || launches!=4 || dut.rf.mem[20] !== 100 ||
+           dut.rf.mem[31] !== 0 || dut.rf.mem[22] !== 127)
             $fatal(1,"Restart state/count mismatch head=%0d tail=%0d launches=%0d",head,tail,launches);
         repeat(8) @(negedge clk);
         if(dut.issue_valid || dut.start_flag || dut.PC!=0) $fatal(1,"Restart END did not stop fetch");
-        $display("CONTROLLER_RESULT issued=%0d retired=%0d transfers=%0d launches=%0d errors=0",issued,retired,head,launches);
-        $display("TEST_PASS: rising-edge controller, EX/WB forwarding, branches, memory packets, backpressure, start/drain/END and restart");
+        if(branch_stalls!=16 || cbr_taken==0 || cbr_not_taken==0)
+            $fatal(1,"Branch coverage/stall count mismatch stalls=%0d taken=%0d not_taken=%0d",branch_stalls,cbr_taken,cbr_not_taken);
+        $display("CONTROLLER_RESULT issued=%0d retired=%0d transfers=%0d launches=%0d branch_stalls=%0d cbr_taken=%0d cbr_not_taken=%0d errors=0",issued,retired,head,launches,branch_stalls,cbr_taken,cbr_not_taken);
+        $display("TEST_PASS: rising-edge controller, EX/WB ALU forwarding, WB-only branches with one-cycle dependency bubbles, memory packets, backpressure, start/drain/END and restart");
         $finish;
     end
     initial begin

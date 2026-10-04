@@ -95,6 +95,7 @@ module Controller #(
     logic memory_inflight;
     logic fetch_memory_wait;
     logic end_drain;
+    logic branch_wait;
     always_ff @(posedge clk or posedge rst) begin
         if(rst) begin
             PC  <= '0;
@@ -176,6 +177,7 @@ module Controller #(
     logic [DATA_W-1:0] rtemp_rd_data;
     logic [DATA_W-1:0] ra_forwarded, rb_forwarded;
     logic [DATA_W-1:0] rd_forwarded, rtemp_forwarded;
+    logic [DATA_W-1:0] branch_ra_data;
 
     reg_file #(
         .SIZE(32),
@@ -208,6 +210,14 @@ module Controller #(
     assign rtemp_forwarded = (rf_wen_reg1 && rd_reg1 != 0 && rd_reg1 == rtemp) ? alu_result :
                             (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == rtemp) ? alu_result_reg : rtemp_rd_data;
 
+    // A dependent CBR stays at decode for one cycle while its EX producer
+    // captures into ALU_REG. Only issue/PC stall; EX/WB continue draining.
+    // Do not use live alu_result here: that would reconnect ALU -> branch -> PC.
+    assign branch_wait = cbr_signal && rf_wen_reg1 &&
+                         (rd_reg1 != 0) && (rd_reg1 == ra);
+    assign branch_ra_data = (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == ra) ?
+                           alu_result_reg : ra_rd_data;
+
     assign extend_imm16 = {16'b0, imm16};
     assign extend_imm16_shift = extend_imm16<<16;
 
@@ -215,7 +225,7 @@ module Controller #(
     BranchDecision #(
         .DATA_W(DATA_W)
     ) decide_pc (
-        .ra_rd_data(ra_forwarded),
+        .ra_rd_data(branch_ra_data),
         .br(br_signal),
         .cbr(cbr_signal),
         .PC_sel(PC_sel)
@@ -348,7 +358,8 @@ module Controller #(
                                 (instruction[31:26] >= 6'd21 && instruction[31:26] <= 6'd24));
     assign end_drain = (instruction[31:26] == 6'b010111) &&
                        ((rf_wen_reg1 && rd_reg1 != 0) || (rf_wen_reg2 && rd_reg2 != 0));
-    assign issue_valid = start_flag && PC_en && !end_flag && !fetch_memory_wait && !end_drain;
+    assign issue_valid = start_flag && PC_en && !end_flag && !fetch_memory_wait &&
+                         !end_drain && !branch_wait;
 
     Mem_ctrl #(
         .BASE_DATA_OM(BASE_DATA_OM),
