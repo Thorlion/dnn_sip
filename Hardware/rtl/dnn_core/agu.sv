@@ -147,7 +147,9 @@ module AGU #(
             select_next_PC <= 1'b1;
         end
         else begin
-            if(reach_bp == 0 || iteration == 0) begin
+            // Both clocked processes see the pre-edge iteration value.
+            // At 1, this is the final pass: decrement to zero without jumping.
+            if(reach_bp == 0 || iteration <= 1) begin
                 select_next_PC <= '0;
             end
             else begin
