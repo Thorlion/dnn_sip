@@ -11,10 +11,11 @@ try {
         Where-Object {$_ -match '^(shared|controller)/'} |
         ForEach-Object {Join-Path $taskRTL $_}
     & "$ModelSimBin/vlog.exe" -sv -work work -l compile.log @taskFiles `
-        "$PSScriptRoot/controller_posedge_tb.sv" "$PSScriptRoot/controller_modes_posedge_tb.sv" `
+        "$PSScriptRoot/controller_posedge_tb.sv" "$PSScriptRoot/controller_alu_pipe_tb.sv" `
+        "$PSScriptRoot/controller_modes_posedge_tb.sv" `
         "$PSScriptRoot/mem_ctrl_posedge_tb.sv"
     if($LASTEXITCODE -ne 0){throw 'Controller test compilation failed'}
-    foreach($taskTB in @('controller_posedge_tb','controller_modes_posedge_tb','mem_ctrl_posedge_tb')) {
+    foreach($taskTB in @('controller_posedge_tb','controller_alu_pipe_tb','controller_modes_posedge_tb','mem_ctrl_posedge_tb')) {
         & "$ModelSimBin/vsim.exe" -c -lib work $taskTB -l "$taskTB.log" `
             -wlf "$taskTB.wlf" -do 'run -all; quit -f' |
             Where-Object {$_ -match 'CONTROLLER_.*RESULT|MEM_CTRL_RESULT|TEST_|\*\* (Error|Fatal)'}

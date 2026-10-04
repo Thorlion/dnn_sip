@@ -37,9 +37,9 @@ module controller_posedge_tb;
     always #5 clk=~clk;
 
     reg [31:0] prog[0:255], ref_rf[0:31];
-    reg [31:0] pipe_data[0:1];
-    reg [4:0] pipe_rd[0:1];
-    bit pipe_wen[0:1];
+    reg [31:0] pipe_data[0:2];
+    reg [4:0] pipe_rd[0:2];
+    bit pipe_wen[0:2];
     reg [67:0] transfers[0:31];
     bit incoming[0:31];
     integer tail=0,head=0,ref_pc=0,issued=0,retired=0,cycles=0,launches=0;
@@ -47,6 +47,7 @@ module controller_posedge_tb;
     integer branch_stalls=0,cbr_taken=0,cbr_not_taken=0;
     integer data_stalls=0,raw_ra=0,raw_rb=0,raw_rd=0,raw_rt=0;
     integer ignored_rb=0,ignored_rd=0,ignored_ra=0,r0_exclusions=0,dual_raw=0;
+    integer stage_index;
     reg [31:0] ins,answer,random_state=32'h617e51;
     reg [67:0] req;
     reg [31:0] source_addr,dest_addr;
@@ -58,8 +59,7 @@ module controller_posedge_tb;
     bit expected_branch_wait,branch_stalled;
     bit expected_data_wait,data_stalled;
     reg [3:0] used_sources,raw_sources;
-    reg [31:0] decode_ins,stalled_ins,producer_data;
-    reg [4:0] producer_rd;
+    reg [31:0] decode_ins,stalled_ins;
 
     function [31:0] enc(input integer opc,input integer d,input integer a,
                         input integer b,input integer t);
@@ -96,25 +96,32 @@ module controller_posedge_tb;
         if(cycles>4000) $fatal(1,"Controller test timeout ref_pc=%0d head=%0d tail=%0d",ref_pc,head,tail);
         if(rst) begin
             for(ref_init=0;ref_init<32;ref_init=ref_init+1) ref_rf[ref_init]=0;
-            pipe_wen[0]=0; pipe_wen[1]=0; ref_pc=0;
+            pipe_wen[0]=0; pipe_wen[1]=0; pipe_wen[2]=0; ref_pc=0;
         end else begin
-            // The independent expected EX packet was created only when the
-            // reference accepted an instruction at the preceding edge.
+            // Independent EX1/EX2 packets come from accepted instructions,
+            // not the DUT's operand muxes or physical pipeline registers.
             expected_branch_wait=(prog[dut.PC][31:26]==6'd20) &&
-                                 pipe_wen[0] && (pipe_rd[0]!=0) &&
-                                 (pipe_rd[0]==prog[dut.PC][20:16]);
+                                 ((pipe_wen[0] && pipe_rd[0]!=0 &&
+                                   pipe_rd[0]==prog[dut.PC][20:16]) ||
+                                  (pipe_wen[1] && pipe_rd[1]!=0 &&
+                                   pipe_rd[1]==prog[dut.PC][20:16]));
             if(dut.branch_wait !== expected_branch_wait)
                 $fatal(1,"CBR dependency-stall mismatch PC=%0d",dut.PC);
             decode_ins=prog[dut.PC]; used_sources=source_mask(decode_ins);
-            raw_sources=used_sources & {
-                (pipe_rd[0]==decode_ins[10:6]),(pipe_rd[0]==decode_ins[25:21]),
-                (pipe_rd[0]==decode_ins[15:11]),(pipe_rd[0]==decode_ins[20:16])};
-            expected_data_wait=pipe_wen[0] && pipe_rd[0]!=0 && (|raw_sources);
+            raw_sources=0;
+            for(stage_index=0;stage_index<2;stage_index=stage_index+1)
+                if(pipe_wen[stage_index] && pipe_rd[stage_index]!=0)
+                    raw_sources=raw_sources | (used_sources & {
+                        (pipe_rd[stage_index]==decode_ins[10:6]),
+                        (pipe_rd[stage_index]==decode_ins[25:21]),
+                        (pipe_rd[stage_index]==decode_ins[15:11]),
+                        (pipe_rd[stage_index]==decode_ins[20:16])});
+            expected_data_wait=(|raw_sources);
             if({dut.data_use_rtemp,dut.data_use_rd,dut.data_use_rb,dut.data_use_ra} !== used_sources ||
                dut.data_wait !== expected_data_wait)
                 $fatal(1,"Data source-mask/dependency mismatch PC=%0d",dut.PC);
             data_stalled=dut.data_wait;
-            stalled_ins=decode_ins; producer_rd=pipe_rd[0]; producer_data=pipe_data[0];
+            stalled_ins=decode_ins;
             branch_stalled=dut.branch_wait;
             stalled_pc=dut.PC;
             if(data_stalled) begin
@@ -141,12 +148,19 @@ module controller_posedge_tb;
                     $fatal(1,"Dependent CBR issued or reached mode control during stall");
             end
             // Check the actual pending WB packet before the rising-edge write.
-            retire_we=pipe_wen[1]; retire_rd=pipe_rd[1]; retire_data=pipe_data[1];
+            if(dut.rf_wen_reg1 !== pipe_wen[0] || dut.rf_wen_mid !== pipe_wen[1])
+                $fatal(1,"EX1/EX2 validity mismatch");
+            if(pipe_wen[0] && dut.rd_reg1 !== pipe_rd[0])
+                $fatal(1,"EX1 destination mismatch");
+            if(pipe_wen[1] && (dut.rd_mid !== pipe_rd[1] || dut.alu_result !== pipe_data[1]))
+                $fatal(1,"Registered arithmetic/result-mux data or tag mismatch");
+            retire_we=pipe_wen[2]; retire_rd=pipe_rd[2]; retire_data=pipe_data[2];
             if(dut.rf_wen_reg2 !== retire_we)
                 $fatal(1,"WB validity mismatch");
             if(retire_we && (dut.rd_reg2 !== retire_rd || dut.alu_result_reg !== retire_data))
                 $fatal(1,"WB data/tag mismatch rd=%0d got=%h expected=%h",retire_rd,dut.alu_result_reg,retire_data);
             if(retire_we) retired=retired+1;
+            pipe_wen[2]=pipe_wen[1]; pipe_rd[2]=pipe_rd[1]; pipe_data[2]=pipe_data[1];
             pipe_wen[1]=pipe_wen[0]; pipe_rd[1]=pipe_rd[0]; pipe_data[1]=pipe_data[0];
             pipe_wen[0]=0;
             if(p0_in!=0 && !dut.memory_busy) begin
@@ -253,19 +267,19 @@ module controller_posedge_tb;
                 if(dut.PC !== stalled_pc || dut.instruction !== stalled_ins ||
                    dut.rf_wen_reg1!==0 || dut.type_access_reg!==0)
                     $fatal(1,"Data bubble advanced PC/instruction or issued a side effect");
-                if(dut.data_wait || !dut.rf_wen_reg2 || dut.rd_reg2 !== producer_rd ||
-                   dut.alu_result_reg !== producer_data)
-                    $fatal(1,"Data bubble failed to drain EX into WB in one cycle");
             end
             if(branch_stalled) begin
                 if(dut.PC !== stalled_pc || dut.instruction[31:26]!==6'd20 ||
                    dut.rf_wen_reg1!==0 || dut.type_access_reg!==0)
                     $fatal(1,"Branch bubble advanced PC or issued a side effect");
-                if(dut.branch_wait || !dut.rf_wen_reg2 ||
-                   dut.rd_reg2 !== prog[stalled_pc][20:16] ||
-                   dut.alu_result_reg !== ref_rf[prog[stalled_pc][20:16]])
-                    $fatal(1,"Branch stall froze its producer or failed to drain into WB");
             end
+            // Both execution stages advance during either dependency wait.
+            if(dut.rf_wen_mid !== pipe_wen[1] || dut.rf_wen_reg2 !== pipe_wen[2])
+                $fatal(1,"Stall froze execution validity instead of draining");
+            if(pipe_wen[1] && (dut.rd_mid !== pipe_rd[1] || dut.alu_result !== pipe_data[1]))
+                $fatal(1,"EX1 did not drain into arithmetic registers with aligned tag");
+            if(pipe_wen[2] && (dut.rd_reg2 !== pipe_rd[2] || dut.alu_result_reg !== pipe_data[2]))
+                $fatal(1,"EX2 did not drain into WB with aligned tag/data");
             if(retire_we && retire_rd!=0 && dut.rf.mem[retire_rd] !== retire_data)
                 $fatal(1,"RF rising-edge commit mismatch");
             if(dut.rf.mem[0] !== 0) $fatal(1,"R0 changed");
@@ -378,14 +392,14 @@ module controller_posedge_tb;
             $fatal(1,"Restart state/count mismatch head=%0d tail=%0d launches=%0d",head,tail,launches);
         repeat(8) @(negedge clk);
         if(dut.issue_valid || dut.start_flag || dut.PC!=0) $fatal(1,"Restart END did not stop fetch");
-        if(branch_stalls!=16 || cbr_taken==0 || cbr_not_taken==0)
+        if(branch_stalls!=36 || cbr_taken==0 || cbr_not_taken==0)
             $fatal(1,"Branch coverage/stall count mismatch stalls=%0d taken=%0d not_taken=%0d",branch_stalls,cbr_taken,cbr_not_taken);
         if(raw_ra==0 || raw_rb==0 || raw_rd==0 || raw_rt==0 || dual_raw==0 ||
            ignored_ra==0 || ignored_rb==0 || ignored_rd==0 || r0_exclusions==0)
             $fatal(1,"Data RAW/source-mask coverage incomplete");
         $display("CONTROLLER_RESULT issued=%0d retired=%0d transfers=%0d launches=%0d branch_stalls=%0d cbr_taken=%0d cbr_not_taken=%0d errors=0",issued,retired,head,launches,branch_stalls,cbr_taken,cbr_not_taken);
         $display("CONTROLLER_RAW_RESULT stalls=%0d ra=%0d rb=%0d rd=%0d rtemp=%0d dual=%0d ignored_ra=%0d ignored_rb=%0d ignored_rd=%0d r0_exclusions=%0d errors=0",data_stalls,raw_ra,raw_rb,raw_rd,raw_rt,dual_raw,ignored_ra,ignored_rb,ignored_rd,r0_exclusions);
-        $display("TEST_PASS: rising-edge controller, WB-only data/branch forwarding with selective one-cycle RAW bubbles, memory packets, backpressure, start/drain/END and restart");
+        $display("TEST_PASS: multiplier-output pipeline, EX1/EX2 tag/data alignment, WB-only forwarding with dependency bubbles, memory packets, backpressure, start/drain/END and restart");
         $finish;
     end
     initial begin

@@ -174,6 +174,8 @@ module Controller #(
     logic [4:0] rd_reg2;
     logic rf_wen_reg1;
     logic rf_wen_reg2;
+    logic [4:0] rd_mid;
+    logic rf_wen_mid;
     logic [DATA_W-1:0] alu_result;
     logic [DATA_W-1:0] alu_result_reg;
     logic [DATA_W-1:0] rtemp_rd_data;
@@ -201,31 +203,38 @@ module Controller #(
         .rtemp_rd_data(rtemp_rd_data)
     );
 
-    // Stall only true EX read-after-write dependencies. Ignore unused fields:
+    // Stall true dependencies against both arithmetic and result-mux stages.
+    // Ignore unused fields:
     // immediate bits overlap RB/RTEMP, and an ALU destination is not a source.
     // Memory transfers read all four registers to form their address packet.
     assign data_use_ra = (rf_wen && alu_oper1_sel == 0) || type_access != 0;
     assign data_use_rb = (rf_wen && alu_oper2_sel == 0) || type_access != 0;
     assign data_use_rd = type_access != 0;
     assign data_use_rtemp = type_access != 0;
-    assign data_wait = rf_wen_reg1 && rd_reg1 != 0 &&
+    assign data_wait = (rf_wen_reg1 && rd_reg1 != 0 &&
                        ((data_use_ra && rd_reg1 == ra) ||
                         (data_use_rb && rd_reg1 == rb) ||
                         (data_use_rd && rd_reg1 == rd) ||
-                        (data_use_rtemp && rd_reg1 == rtemp));
+                        (data_use_rtemp && rd_reg1 == rtemp))) ||
+                      (rf_wen_mid && rd_mid != 0 &&
+                       ((data_use_ra && rd_mid == ra) ||
+                        (data_use_rb && rd_mid == rb) ||
+                        (data_use_rd && rd_mid == rd) ||
+                        (data_use_rtemp && rd_mid == rtemp)));
 
-    // During the bubble EX drains into ALU_REG; decode then forwards registered
+    // During the bubbles EX1/EX2 drain into ALU_REG; decode forwards registered
     // WB data. No live ALU result feeds back into the operand/address registers.
     assign ra_forwarded = (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == ra) ? alu_result_reg : ra_rd_data;
     assign rb_forwarded = (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == rb) ? alu_result_reg : rb_rd_data;
     assign rd_forwarded = (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == rd) ? alu_result_reg : rd_rd_data;
     assign rtemp_forwarded = (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == rtemp) ? alu_result_reg : rtemp_rd_data;
 
-    // A dependent CBR stays at decode for one cycle while its EX producer
-    // captures into ALU_REG. Only issue/PC stall; EX/WB continue draining.
+    // A dependent CBR waits for its EX1/EX2 producer to reach ALU_REG.
+    // Only issue/PC stall; the execution stages and WB continue draining.
     // Do not use live alu_result here: that would reconnect ALU -> branch -> PC.
-    assign branch_wait = cbr_signal && rf_wen_reg1 &&
-                         (rd_reg1 != 0) && (rd_reg1 == ra);
+    assign branch_wait = cbr_signal &&
+                         ((rf_wen_reg1 && rd_reg1 != 0 && rd_reg1 == ra) ||
+                          (rf_wen_mid && rd_mid != 0 && rd_mid == ra));
     assign branch_ra_data = (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == ra) ?
                            alu_result_reg : ra_rd_data;
 
@@ -308,17 +317,21 @@ module Controller #(
     MC_alu #(
         .DATA_W(DATA_W)
     ) alu (
+        .clk(clk), .rst(rst), .wen(rf_wen_reg1),
         .operand_1(alu_oper1_final),        // RA(0), RD(1), 0(2)
         .operand_2(alu_oper2_final),        // RB(0), imm16(1), 0(2), 1(3), imm16<<16(4)
         .alu_op(alu_op_reg),
         .result(alu_result)
     );
-    // alu_result latch reg
-    regs #(.DATA_W(DATA_W)) ALU_REG (.clk(clk), .rst(rst), .wen(rf_wen_reg1), .din(alu_result), .dout(alu_result_reg));
+    // Tags/valid advance with MUL_STAGE/OTHER_STAGE, even while decode waits.
+    regs #(.DATA_W(1)) WENRF_MID (.clk(clk), .rst(rst), .wen(1'b1), .din(rf_wen_reg1), .dout(rf_wen_mid));
+    regs #(.DATA_W(5)) ARD_MID (.clk(clk), .rst(rst), .wen(1'b1), .din(rd_reg1), .dout(rd_mid));
+    // WB captures the result mux one cycle after registered arithmetic results.
+    regs #(.DATA_W(DATA_W)) ALU_REG (.clk(clk), .rst(rst), .wen(rf_wen_mid), .din(alu_result), .dout(alu_result_reg));
     // Reg_file write enable latch reg 2
-    regs #(.DATA_W(1)) WENRF2 (.clk(clk), .rst(rst), .wen(1'b1), .din(rf_wen_reg1), .dout(rf_wen_reg2));
+    regs #(.DATA_W(1)) WENRF2 (.clk(clk), .rst(rst), .wen(1'b1), .din(rf_wen_mid), .dout(rf_wen_reg2));
     // RD addr latch reg 2
-    regs #(.DATA_W(5)) ARD2 (.clk(clk), .rst(rst), .wen(1'b1), .din(rd_reg1), .dout(rd_reg2));
+    regs #(.DATA_W(5)) ARD2 (.clk(clk), .rst(rst), .wen(1'b1), .din(rd_mid), .dout(rd_reg2));
 
     // Region B ==========================================================================================================
     logic [DATA_W - 1:0] addr_base_src;
@@ -368,7 +381,8 @@ module Controller #(
                                ((type_access != 0) ||
                                 (instruction[31:26] >= 6'd21 && instruction[31:26] <= 6'd24));
     assign end_drain = (instruction[31:26] == 6'b010111) &&
-                       ((rf_wen_reg1 && rd_reg1 != 0) || (rf_wen_reg2 && rd_reg2 != 0));
+                       ((rf_wen_reg1 && rd_reg1 != 0) ||
+                        (rf_wen_mid && rd_mid != 0) || (rf_wen_reg2 && rd_reg2 != 0));
     assign issue_valid = start_flag && PC_en && !end_flag && !fetch_memory_wait &&
                          !end_drain && !branch_wait && !data_wait;
 

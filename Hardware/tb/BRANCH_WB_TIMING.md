@@ -1,7 +1,7 @@
 # WB-only branch forwarding: implementation and timing
 
-Historical branch-only result. The current controller also uses WB-only data
-forwarding with selective RAW bubbles; see [WB_ONLY_FORWARDING.md](WB_ONLY_FORWARDING.md).
+Historical branch-only result. For the current working controller's WB-only
+forwarding and multiplier-output pipeline, see [MUL_OUTPUT_PIPELINE.md](MUL_OUTPUT_PIPELINE.md).
 
 Applied on 2026-10-04 in the main working directory, based on commit
 88fc7e8 (sync to posedge). Production assembly and instruction images are

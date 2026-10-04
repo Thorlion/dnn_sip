@@ -1,5 +1,8 @@
 # WB-only controller data forwarding
 
+Historical two-stage controller result. The current working controller adds a
+multiplier-output stage; see [MUL_OUTPUT_PIPELINE.md](MUL_OUTPUT_PIPELINE.md).
+
 Applied to the main working RTL on 2026-10-04, based on commit f10c11d
 (`optimize branch critical path`). This supersedes the current-design timing
 in BRANCH_WB_TIMING.md. Assembly, both instruction images, the DNN core,
