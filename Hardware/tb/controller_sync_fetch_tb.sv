@@ -16,19 +16,42 @@ module controller_sync_fetch_case #(parameter MODEL=1)(output reg finished=0);
         .OM_inst_rd(212'd0),.DNN_rd_data(16'd0),
         .done_transfer_prev(prev),.done_vtransfer_prev(prevv));
     always #5 clk=~clk;
+    generate if(MODEL==1) begin : check_single_mode_acceptance
+        // Preserve the old accepted-opcode behavior through reset, invalid
+        // fetches, delayed handshakes, repeated start, END and restart.
+        always @(posedge clk) if(!rst) begin
+            if({dut.single_mode.accept_end,dut.single_mode.accept_vsync,
+                dut.single_mode.accept_sdc} !==
+               {(dut.mode_opcode==6'd23),(dut.mode_opcode==6'd22),
+                (dut.mode_opcode==6'd21)})
+                $fatal(1,"SINGLE direct mode acceptance differs from legacy opcode");
+        end
+    end endgenerate
     reg [31:0] program_words[0:63];
     reg [31:0] ref_rf[0:31];
-    reg [5:0] ref_pc=0,read_addr,old_pc;
+    reg [5:0] ref_pc=0,read_addr,old_pc,legacy_read_addr;
     reg [31:0] read_word,old_instruction,stable_instruction,ins;
+    reg [3:0] stable_meta,old_meta;
     bit read_en,old_valid,was_reset,was_end;
     integer i,k,opc,rd,ra,ticks=0,core_wait=0;
     integer reads=0,holds=0,invalid_cycles=0,issues=0,waits=0,ends=0;
+    integer checked_reads=0,bootstrap_reads=0,lookahead_holds=0;
     function [31:0] enc(input integer op,input integer d,input integer a,input integer imm);
         enc={op[5:0],d[4:0],a[4:0],imm[15:0]};
+    endfunction
+    function [3:0] expected_meta(input [31:0] word);
+        reg [5:0] code;
+        reg is_mem;
+        begin
+            code=word[31:26]; is_mem=(code>=32 && code<=39);
+            expected_meta={(code==20),is_mem,(code<=4 || is_mem),(code<=13 || is_mem)};
+        end
     endfunction
     always @(negedge clk) begin
         if(dut.instruction !== stable_instruction)
             $fatal(1,"MODEL%0d instruction changed outside rising edge",MODEL);
+        if(dut.instruction_meta !== stable_meta)
+            $fatal(1,"MODEL%0d metadata changed outside rising edge",MODEL);
         // Delayed external handshakes exercise every mode's PC-enable waits.
         ticks=ticks+1;
         vi=(ticks%7==0); hi=(ticks%11==0);
@@ -45,6 +68,21 @@ module controller_sync_fetch_case #(parameter MODEL=1)(output reg finished=0);
         read_en=dut.instruction_read_en; read_addr=dut.PC_next;
         read_word=program_words[read_addr];
         old_pc=dut.PC; old_instruction=dut.instruction; old_valid=dut.instruction_valid;
+        old_meta=dut.instruction_meta;
+        // Address changes while read enable is low are intentional. On every
+        // enabled edge, however, the candidate must equal the former
+        // issue-gated address, including bootstrap and truncated branch targets.
+        legacy_read_addr=old_pc;
+        if(ending) legacy_read_addr=0;
+        else if(dut.issue_valid)
+            legacy_read_addr=dut.PC_sel ? dut.imm16 : old_pc+1'b1;
+        if(read_en) begin
+            if(read_addr !== legacy_read_addr)
+                $fatal(1,"MODEL%0d enabled read differs from legacy address",MODEL);
+            checked_reads=checked_reads+1;
+            if(!dut.start_flag) bootstrap_reads=bootstrap_reads+1;
+        end else if(!rst && !ending && dut.start_flag && old_valid && read_addr !== old_pc)
+            lookahead_holds=lookahead_holds+1;
         if(read_en !== (!rst && !ending && ((start && !dut.start_flag) || dut.issue_valid)))
             $fatal(1,"MODEL%0d unexpected instruction read enable",MODEL);
         if((!dut.instruction_valid || ending || rst) && dut.issue_valid !== 0)
@@ -81,6 +119,8 @@ module controller_sync_fetch_case #(parameter MODEL=1)(output reg finished=0);
         end else if(read_en) begin
             if(dut.PC !== read_addr || dut.instruction !== read_word || dut.instruction_valid !== 1)
                 $fatal(1,"MODEL%0d synchronous fetch/address/valid mismatch",MODEL);
+            if(dut.instruction_meta !== expected_meta(read_word))
+                $fatal(1,"MODEL%0d instruction/predecode metadata misalignment",MODEL);
             reads=reads+1;
         end else begin
             if(dut.PC !== old_pc || dut.instruction_valid !== old_valid)
@@ -89,8 +129,11 @@ module controller_sync_fetch_case #(parameter MODEL=1)(output reg finished=0);
         end
         if(!read_en && dut.instruction !== old_instruction)
             $fatal(1,"MODEL%0d disabled RAM read did not hold instruction",MODEL);
+        if(!read_en && dut.instruction_meta !== old_meta)
+            $fatal(1,"MODEL%0d disabled RAM read did not hold metadata",MODEL);
         if(!dut.instruction_valid) invalid_cycles=invalid_cycles+1;
         stable_instruction=dut.instruction;
+        stable_meta=dut.instruction_meta;
     end
     task write_word(input integer addr,input [31:0] word);
         begin @(negedge clk); #2; wen=1; wr_addr=addr; wr_data=word; end
@@ -106,7 +149,9 @@ module controller_sync_fetch_case #(parameter MODEL=1)(output reg finished=0);
             #2; rst=1; start=0;
             #1;
             if(dut.instruction_valid !== 0 || dut.issue_valid !== 0 || dut.PC !== 0 ||
-               dut.rf_wen_reg1 !== 0 || dut.rf_wen_mid !== 0 || dut.rf_wen_reg2 !== 0)
+               dut.rf_wen_reg1 !== 0 || dut.rf_wen_mid !== 0 || dut.rf_wen_reg2 !== 0 ||
+               dut.rf_nonzero !== 0 || dut.wb_nonzero !== 0 ||
+               dut.rf_pending !== 0 || dut.ex1_dest_mask !== 0)
                 $fatal(1,"MODEL%0d asynchronous reset failed",MODEL);
             repeat(2) @(negedge clk); #2; rst=0;
         end
@@ -155,9 +200,11 @@ module controller_sync_fetch_case #(parameter MODEL=1)(output reg finished=0);
         // Abort in a dependency stall and start again after asynchronous reset.
         kick(); wait(dut.data_wait && dut.instruction_valid); async_reset();
         kick(); check_finished(456);
-        if(waits==0 || ends!=3 || reads==0 || holds==0 || invalid_cycles==0)
+        if(waits==0 || ends!=3 || reads==0 || holds==0 || invalid_cycles==0 ||
+           checked_reads==0 || bootstrap_reads==0 || lookahead_holds==0)
             $fatal(1,"MODEL%0d fetch/control coverage incomplete",MODEL);
         $display("CONTROLLER_SYNC_FETCH_RESULT model=%0d reads=%0d holds=%0d invalid=%0d issues=%0d mode_waits=%0d ends=%0d errors=0",MODEL,reads,holds,invalid_cycles,issues,waits,ends);
+        $display("CONTROLLER_LOOKAHEAD_RESULT model=%0d equivalent_reads=%0d bootstrap_reads=%0d held_candidate_changes=%0d errors=0",MODEL,checked_reads,bootstrap_reads,lookahead_holds);
         finished=1;
     end
     initial begin #30000; if(!finished) $fatal(1,"MODEL%0d fetch test timeout",MODEL); end

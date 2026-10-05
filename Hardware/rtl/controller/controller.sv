@@ -105,11 +105,15 @@ module Controller #(
     // address on the edge which consumes the current instruction, so PC and
     // instruction remain aligned without adding an instruction-issue bubble.
     // A taken branch reads its target directly; a stall holds the RAM output.
+    // Calculate the candidate address independently of issue_valid. During a
+    // stall instruction_read_en holds both the BRAM output and PC register;
+    // the unused read address need not hold. Before start_flag, keep PC for
+    // the bootstrap read so word zero is not skipped.
     always_comb begin
         PC_next = PC;
         if (end_flag)
             PC_next = '0;
-        else if (issue_valid)
+        else if (start_flag)
             PC_next = PC_sel ? imm16 : PC + 1'b1;
     end
     // Bootstrap word zero on the start edge, before start_flag permits issue.
@@ -130,21 +134,46 @@ module Controller #(
     end
 
     logic [DATA_W-1:0] instruction;
+    logic [3:0] instruction_meta;
+    logic [2:0] upload_operand_use, decoded_operand_use;
+    logic upload_cbr, decoded_cbr;
+    wire [3:0] upload_meta = {upload_cbr, upload_operand_use};
 
-    mem #(
-        .DATA_W(DATA_W),
-        .DEPTH(MCMEM_W),
-        .EN_OUT_FF(1),
-        .RAM_STYLE("block")
-    ) MCMem(
-        .clk(clk),
-        .wen(mcmem_wen),
-        .ren(instruction_read_en),
-        .addr_w(mcmem_wr_addr),
-        .addr_r(PC_next),
-        .wdata(mcmem_wr_data),
-        .rdata(instruction)
+    // Predecode at program-upload time, using the same ISA decoder as execute.
+    // Metadata is read on the same edge/enable/address as the instruction,
+    // not through another fetch stage. Firmware still uploads 32-bit words.
+    Decoder_MC #(.INST_W(INSTR_W)) upload_decoder(
+        .inst(mcmem_wr_data), .operand_use(upload_operand_use),
+        .cbr_signal(upload_cbr)
     );
+    generate
+        if(DATA_W == 32 && INSTR_W == 32) begin : instruction_banks
+            // Four parallel 4Kx9 BRAMs instead of depth-cascaded 4Kx32 RAM.
+            // Each bank holds one instruction byte plus one predecoded bit,
+            // using the native ninth bit without increasing the BRAM count.
+            for(genvar bank=0; bank<4; bank=bank+1) begin : bank_mem
+                wire [8:0] bank_output;
+                mem #(.DATA_W(9), .DEPTH(MCMEM_W), .EN_OUT_FF(1),
+                      .RAM_STYLE("block")) MCMem(
+                    .clk(clk), .wen(mcmem_wen), .ren(instruction_read_en),
+                    .addr_w(mcmem_wr_addr), .addr_r(PC_next),
+                    .wdata({upload_meta[bank],mcmem_wr_data[bank*8 +: 8]}),
+                    .rdata(bank_output)
+                );
+                assign instruction[bank*8 +: 8] = bank_output[7:0];
+                assign instruction_meta[bank] = bank_output[8];
+            end
+        end else begin : instruction_fallback
+            // Preserve existing parameterized behavior outside the 32-bit ISA.
+            mem #(.DATA_W(DATA_W), .DEPTH(MCMEM_W), .EN_OUT_FF(1),
+                  .RAM_STYLE("block")) MCMem(
+                .clk(clk), .wen(mcmem_wen), .ren(instruction_read_en),
+                .addr_w(mcmem_wr_addr), .addr_r(PC_next),
+                .wdata(mcmem_wr_data), .rdata(instruction)
+            );
+            assign instruction_meta = {decoded_cbr,decoded_operand_use};
+        end
+    endgenerate
 
     // {Opcode[31:26], RD[25:21], RA[20:16], RB[15:11], Rtemp[10:6], Unused [5:0]}
     wire [4:0] rd;
@@ -174,10 +203,12 @@ module Controller #(
         .alu_oper1_sel(alu_oper1_sel),
         .alu_oper2_sel(alu_oper2_sel),
         .br_signal(br_signal),
-        .cbr_signal(cbr_signal),
+        .cbr_signal(decoded_cbr),
         .rf_wen(rf_wen), 
-        .type_access(type_access)  
+        .type_access(type_access),
+        .operand_use(decoded_operand_use)
     );
+    assign cbr_signal = instruction_meta[3];
 
     logic [DATA_W-1:0] ra_rd_data;
     logic [DATA_W-1:0] rb_rd_data;
@@ -194,6 +225,46 @@ module Controller #(
     logic [DATA_W-1:0] ra_forwarded, rb_forwarded;
     logic [DATA_W-1:0] rd_forwarded, rtemp_forwarded;
     logic [DATA_W-1:0] branch_ra_data;
+    logic [31:0] rf_nonzero;
+    logic wb_nonzero;
+    logic branch_ra_nonzero;
+    logic [31:0] ex1_dest_mask;
+    logic [31:0] rf_pending;
+    logic [31:0] issued_dest_mask;
+
+    // Scoreboard mirrors EXACTLY the two non-forwardable producer stages.
+    // Rebuild it from EX1 plus the newly issued destination every edge, rather
+    // than set/clear bits: two writers to the same register cannot clear each
+    // other prematurely. WB is excluded because decode forwards WB data.
+    assign issued_dest_mask = (issue_valid && rf_wen && rd != 0) ?
+                              (32'b1 << rd) : 32'b0;
+    always_ff @(posedge clk or posedge rst) begin
+        if(rst) begin
+            ex1_dest_mask <= '0;
+            rf_pending <= '0;
+        end else begin
+            ex1_dest_mask <= issued_dest_mask;
+            rf_pending <= ex1_dest_mask | issued_dest_mask;
+        end
+    end
+
+    // Capture the predicate on the same edge/enable as ALU_REG. This is
+    // metadata for the existing WB stage, not another instruction stage.
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst)
+            wb_nonzero <= 1'b0;
+        else if (rf_wen_mid)
+            wb_nonzero <= (alu_result != '0);
+    end
+
+    // Mirror architectural RF writes, including holds and asynchronous reset.
+    // Writes to R0 are ignored just as they are in the data register file.
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst)
+            rf_nonzero <= '0;
+        else if (rf_wen_reg2 && rd_reg2 != 0)
+            rf_nonzero[rd_reg2] <= wb_nonzero;
+    end
 
     reg_file #(
         .SIZE(32),
@@ -219,20 +290,14 @@ module Controller #(
     // Ignore unused fields:
     // immediate bits overlap RB/RTEMP, and an ALU destination is not a source.
     // Memory transfers read all four registers to form their address packet.
-    assign data_use_ra = (rf_wen && alu_oper1_sel == 0) || type_access != 0;
-    assign data_use_rb = (rf_wen && alu_oper2_sel == 0) || type_access != 0;
-    assign data_use_rd = type_access != 0;
-    assign data_use_rtemp = type_access != 0;
-    assign data_wait = (rf_wen_reg1 && rd_reg1 != 0 &&
-                       ((data_use_ra && rd_reg1 == ra) ||
-                        (data_use_rb && rd_reg1 == rb) ||
-                        (data_use_rd && rd_reg1 == rd) ||
-                        (data_use_rtemp && rd_reg1 == rtemp))) ||
-                      (rf_wen_mid && rd_mid != 0 &&
-                       ((data_use_ra && rd_mid == ra) ||
-                        (data_use_rb && rd_mid == rb) ||
-                        (data_use_rd && rd_mid == rd) ||
-                        (data_use_rtemp && rd_mid == rtemp)));
+    assign data_use_ra = instruction_meta[0];
+    assign data_use_rb = instruction_meta[1];
+    assign data_use_rd = instruction_meta[2];
+    assign data_use_rtemp = instruction_meta[2];
+    assign data_wait = (data_use_ra && rf_pending[ra]) ||
+                       (data_use_rb && rf_pending[rb]) ||
+                       (data_use_rd && rf_pending[rd]) ||
+                       (data_use_rtemp && rf_pending[rtemp]);
 
     // During the bubbles EX1/EX2 drain into ALU_REG; decode forwards registered
     // WB data. No live ALU result feeds back into the operand/address registers.
@@ -244,20 +309,22 @@ module Controller #(
     // A dependent CBR waits for its EX1/EX2 producer to reach ALU_REG.
     // Only issue/PC stall; the execution stages and WB continue draining.
     // Do not use live alu_result here: that would reconnect ALU -> branch -> PC.
-    assign branch_wait = cbr_signal &&
-                         ((rf_wen_reg1 && rd_reg1 != 0 && rd_reg1 == ra) ||
-                          (rf_wen_mid && rd_mid != 0 && rd_mid == ra));
+    assign branch_wait = cbr_signal && rf_pending[ra];
     assign branch_ra_data = (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == ra) ?
                            alu_result_reg : ra_rd_data;
+    // Keep branch_ra_data only as a verification probe. The hardware branch
+    // uses a one-bit RF/WB selection, with identical newest-writer priority.
+    assign branch_ra_nonzero = (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == ra) ?
+                              wb_nonzero : rf_nonzero[ra];
 
     assign extend_imm16 = {16'b0, imm16};
     assign extend_imm16_shift = extend_imm16<<16;
 
     //Region A ==========================================================================================================
     BranchDecision #(
-        .DATA_W(DATA_W)
+        .DATA_W(1)
     ) decide_pc (
-        .ra_rd_data(branch_ra_data),
+        .ra_rd_data(branch_ra_nonzero),
         .br(br_signal),
         .cbr(cbr_signal),
         .PC_sel(PC_sel)
@@ -449,12 +516,25 @@ module Controller #(
     // A held PC is not reissued; waiting states still respond to handshakes.
     assign mode_opcode = issue_valid ? instruction[31:26] : 6'b111111;
     generate 
-        if(MODEL == `SINGLE) begin
+        if(MODEL == `SINGLE) begin : single_mode
+            logic mode_ready;
+            logic accept_sdc, accept_vsync, accept_end;
+            // SDC/VSYNC/END have no register operands. Decode their accepted
+            // events directly so general RAW checks do not feed the mode FSM.
+            // Preserve fetch validity, PC holds, memory waits and END draining;
+            // no register stage or extra issue bubble is introduced.
+            assign mode_ready = instruction_valid && start_flag && PC_en &&
+                                !end_flag && !fetch_memory_wait && !end_drain;
+            assign accept_sdc = mode_ready && instruction[31:26] == 6'd21;
+            assign accept_vsync = mode_ready && instruction[31:26] == 6'd22;
+            assign accept_end = mode_ready && instruction[31:26] == 6'd23;
             assign hsync_out       = '0;
             assign done_transfer   = '0;
             assign done_vtransfer  = '0;
             Mode_ctrller_2 mode_ctrl(
-                .opcode(mode_opcode),
+                .accept_sdc(accept_sdc),
+                .accept_vsync(accept_vsync),
+                .accept_end(accept_end),
                 .clk(clk),
                 .rst(rst),        
                 .start(start),      // DSIP start flag

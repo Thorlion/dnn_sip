@@ -48,6 +48,10 @@ module controller_posedge_tb;
     integer data_stalls=0,raw_ra=0,raw_rb=0,raw_rd=0,raw_rt=0;
     integer ignored_rb=0,ignored_rd=0,ignored_ra=0,r0_exclusions=0,dual_raw=0;
     integer stage_index;
+    integer flag_index;
+    integer predicate_checks=0;
+    integer mode_accept_checks=0,accepted_sdc=0,accepted_vsync=0,accepted_end=0;
+    integer mode_field_matches=0,mode_memory_waits=0,mode_end_drains=0;
     reg [31:0] ins,answer,random_state=32'h617e51;
     reg [67:0] req;
     reg [31:0] source_addr,dest_addr;
@@ -98,6 +102,47 @@ module controller_posedge_tb;
             for(ref_init=0;ref_init<32;ref_init=ref_init+1) ref_rf[ref_init]=0;
             pipe_wen[0]=0; pipe_wen[1]=0; pipe_wen[2]=0; ref_pc=0;
         end else begin
+            // Each predicate must mirror the data at the same pipeline edge,
+            // including bubbles, overwrites and ignored R0 destinations.
+            if(dut.wb_nonzero !== (dut.alu_result_reg != 0))
+                $fatal(1,"WB predicate/result alignment mismatch");
+            for(flag_index=0;flag_index<32;flag_index=flag_index+1)
+                if(dut.rf_nonzero[flag_index] !== (dut.rf.mem[flag_index] != 0))
+                    $fatal(1,"RF nonzero predicate mismatch R%0d",flag_index);
+            // Independent producer packets establish both scoreboard stages.
+            // Include simultaneous same-register writers, R0 and drain bubbles.
+            for(flag_index=0;flag_index<32;flag_index=flag_index+1) begin
+                if(dut.ex1_dest_mask[flag_index] !==
+                   (pipe_wen[0] && pipe_rd[0]!=0 && pipe_rd[0]==flag_index))
+                    $fatal(1,"EX1 one-hot destination mismatch R%0d",flag_index);
+                if(dut.rf_pending[flag_index] !==
+                   ((pipe_wen[0] && pipe_rd[0]!=0 && pipe_rd[0]==flag_index) ||
+                    (pipe_wen[1] && pipe_rd[1]!=0 && pipe_rd[1]==flag_index)))
+                    $fatal(1,"Pending scoreboard mismatch R%0d",flag_index);
+            end
+            predicate_checks=predicate_checks+1;
+            // The direct events must equal the former masked-opcode decoder
+            // every cycle, including invalid words, holds, memory waits and
+            // END draining. Unused encoded fields must never create a RAW.
+            if({dut.single_mode.accept_end,dut.single_mode.accept_vsync,
+                dut.single_mode.accept_sdc} !==
+               {(dut.mode_opcode==6'd23),(dut.mode_opcode==6'd22),
+                (dut.mode_opcode==6'd21)})
+                $fatal(1,"Direct mode acceptance differs from legacy issue gating");
+            mode_accept_checks=mode_accept_checks+1;
+            if(dut.single_mode.accept_sdc) accepted_sdc=accepted_sdc+1;
+            if(dut.single_mode.accept_vsync) accepted_vsync=accepted_vsync+1;
+            if(dut.single_mode.accept_end) accepted_end=accepted_end+1;
+            if(dut.instruction_valid && dut.start_flag && !end_flag &&
+               dut.instruction[31:26]>=6'd21 && dut.instruction[31:26]<=6'd23) begin
+                if(dut.data_wait || dut.branch_wait)
+                    $fatal(1,"Operand-free mode instruction has a register dependency");
+                if((dut.rf_wen_reg1 && dut.rd_reg1!=0 && dut.rd_reg1==dut.rtemp) ||
+                   (dut.rf_wen_mid && dut.rd_mid!=0 && dut.rd_mid==dut.rtemp))
+                    mode_field_matches=mode_field_matches+1;
+                if(dut.fetch_memory_wait) mode_memory_waits=mode_memory_waits+1;
+                if(dut.end_drain) mode_end_drains=mode_end_drains+1;
+            end
             // Independent EX1/EX2 packets come from accepted instructions,
             // not the DUT's operand muxes or physical pipeline registers.
             expected_branch_wait=(prog[dut.PC][31:26]==6'd20) &&
@@ -210,6 +255,9 @@ module controller_posedge_tb;
                     20: begin
                         if(dut.branch_ra_data !== ref_rf[ra])
                             $fatal(1,"CBR WB/RF operand mismatch PC=%0d",dut.PC);
+                        if(dut.branch_ra_nonzero !== (ref_rf[ra] != 0) ||
+                           dut.PC_sel !== (ref_rf[ra] != 0))
+                            $fatal(1,"CBR predicate/decision mismatch PC=%0d",dut.PC);
                         if(ref_rf[ra]!=0) begin
                             next_pc=imm; cbr_taken=cbr_taken+1;
                         end else cbr_not_taken=cbr_not_taken+1;
@@ -373,10 +421,13 @@ module controller_posedge_tb;
         append(enc_i(14,11,0,29)); append(enc(32,10,11,12,13)); // RA
         append(enc_i(15,12,0,1)); append(enc(32,10,11,12,13)); // RB
         append(enc_i(14,13,0,33)); append(enc(32,10,11,12,13)); // RTEMP
-        append(enc(22,0,0,0,0)); append(enc(21,0,0,0,0));
+        // Mode instructions ignore all encoded register fields, even when
+        // an EX1/EX2 producer has the same tag. VSYNC still waits for memory.
+        append(enc_i(14,24,0,9));
+        append(enc(22,24,24,24,24)); append(enc(21,24,24,24,24));
         append(enc_i(14,20,0,93)); // Must wait for DNN completion, not execute while held.
         append(enc(22,0,0,0,0)); append(enc(21,0,0,0,0));
-        append(enc_i(8,20,20,7)); append(enc(23,0,0,0,0));
+        append(enc_i(8,20,20,7)); append(enc(23,20,20,20,20));
         for(i=0;i<n;i=i+1) begin
             @(negedge clk); #1; iw=1; ia=i; id=prog[i];
         end
@@ -404,10 +455,23 @@ module controller_posedge_tb;
         if(raw_ra==0 || raw_rb==0 || raw_rd==0 || raw_rt==0 || dual_raw==0 ||
            ignored_ra==0 || ignored_rb==0 || ignored_rd==0 || r0_exclusions==0)
             $fatal(1,"Data RAW/source-mask coverage incomplete");
+        if(accepted_sdc!=4 || accepted_vsync!=4 || accepted_end!=2 ||
+           mode_field_matches==0 || mode_memory_waits==0 || mode_end_drains==0)
+            $fatal(1,"Mode-acceptance coverage incomplete sdc=%0d vsync=%0d end=%0d matches=%0d memory=%0d drain=%0d",
+                   accepted_sdc,accepted_vsync,accepted_end,mode_field_matches,mode_memory_waits,mode_end_drains);
         $display("CONTROLLER_RESULT issued=%0d retired=%0d transfers=%0d launches=%0d branch_stalls=%0d cbr_taken=%0d cbr_not_taken=%0d errors=0",issued,retired,head,launches,branch_stalls,cbr_taken,cbr_not_taken);
         $display("CONTROLLER_RAW_RESULT stalls=%0d ra=%0d rb=%0d rd=%0d rtemp=%0d dual=%0d ignored_ra=%0d ignored_rb=%0d ignored_rd=%0d r0_exclusions=%0d errors=0",data_stalls,raw_ra,raw_rb,raw_rd,raw_rt,dual_raw,ignored_ra,ignored_rb,ignored_rd,r0_exclusions);
+        $display("CONTROLLER_PREDICATE_RESULT cycles=%0d RF_flags=32 WB_flag=1 CBR=checked errors=0",predicate_checks);
+        $display("CONTROLLER_MODE_ACCEPT_RESULT checks=%0d sdc=%0d vsync=%0d end=%0d unused_field_matches=%0d memory_waits=%0d end_drains=%0d errors=0",
+                 mode_accept_checks,accepted_sdc,accepted_vsync,accepted_end,mode_field_matches,mode_memory_waits,mode_end_drains);
         $display("TEST_PASS: multiplier-output pipeline, EX1/EX2 tag/data alignment, WB-only forwarding with dependency bubbles, memory packets, backpressure, start/drain/END and restart");
         $finish;
+    end
+    always @(posedge rst) begin
+        #1;
+        if(dut.wb_nonzero !== 0 || dut.rf_nonzero !== 0 ||
+           dut.rf_pending !== 0 || dut.ex1_dest_mask !== 0)
+            $fatal(1,"Branch predicate asynchronous reset failed");
     end
     initial begin
         wait(!rst && dut.issue_valid && dut.instruction[31:26]==6'd32);

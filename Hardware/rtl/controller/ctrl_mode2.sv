@@ -1,9 +1,9 @@
-module Mode_ctrller_2 #(
-    parameter START_DNN = 6'b010101,
-    parameter VSYNC     = 6'b010110,
-    parameter END_F     = 6'b010111
-)(
-    input  logic [5:0]  opcode,
+// SINGLE-mode instructions are decoded/qualified in Controller. Handshake
+// transitions still run while instruction acceptance is held off.
+module Mode_ctrller_2 (
+    input  logic        accept_sdc,
+    input  logic        accept_vsync,
+    input  logic        accept_end,
     input  logic        clk,
     input  logic        rst,
     input  logic        start,          // DSIP start flag
@@ -29,12 +29,12 @@ module Mode_ctrller_2 #(
                 end_flag    <= '0;
                 enable_PC   <= 1'b1;
             end
-            else if (state == 4'd1 && opcode == VSYNC) begin
+            else if (state == 4'd1 && accept_vsync) begin
                 state       <= 4'd2;
                 vsync_out   <= 1'b1;
                 enable_PC   <= '0;
             end
-            else if (state == 4'd1 && opcode == END_F) begin
+            else if (state == 4'd1 && accept_end) begin
                 state       <= 4'd6;
                 vsync_out   <= '0;
                 end_flag    <= 1'b1;
@@ -45,7 +45,7 @@ module Mode_ctrller_2 #(
                 vsync_out   <= '0;
                 enable_PC   <= 1'b1;
             end
-            else if (state == 4'd3 && opcode == START_DNN) begin
+            else if (state == 4'd3 && accept_sdc) begin
                 state       <= 4'd4;
                 start_DNN   <= 1'b1;
                 enable_PC   <= '0;

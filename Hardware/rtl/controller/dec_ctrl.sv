@@ -18,7 +18,10 @@ module Decoder_MC #(
     output logic        br_signal,        // Branch jump signal
     output logic        cbr_signal,       // Conditional branch jump signal
 
-    output logic [3:0]  type_access
+    output logic [3:0]  type_access,
+    // Bit 0: RA, bit 1: RB, bit 2: both RD and RTEMP (memory addresses).
+    // CBR's RA dependency is represented separately by cbr_signal.
+    output logic [2:0]  operand_use
 );
     logic [5:0] opcode;
     assign opcode = inst[31:26];
@@ -31,6 +34,9 @@ module Decoder_MC #(
     
     assign br_signal = (opcode == 6'b010011) ? 1'b1 : 1'b0;     // OPCODE = 6'd19
     assign cbr_signal = (opcode == 6'b010100) ? 1'b1 : 1'b0;    // OPCODE = 6'd20
+    assign operand_use[0] = (rf_wen && alu_oper1_sel == 0) || type_access != 0;
+    assign operand_use[1] = (rf_wen && alu_oper2_sel == 0) || type_access != 0;
+    assign operand_use[2] = type_access != 0;
 
     always_comb begin
         case(opcode)
