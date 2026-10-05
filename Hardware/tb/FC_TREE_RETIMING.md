@@ -1,8 +1,9 @@
 # FC adder-tree retiming: working implementation
 
 Applied and verified on 2026-10-05 in the main working directory.
-This is the latest timing result for the working ASIP/SINGLE RTL, superseding
-the pre-retiming timing in MUL_OUTPUT_PIPELINE.md. Changes remain uncommitted.
+This records the FC-tree retiming baseline, superseding the pre-retiming timing
+in MUL_OUTPUT_PIPELINE.md. The later MAC fusion and latest working RTL timing
+are documented in MAC_FUSION.md.
 
 ## RTL change
 
