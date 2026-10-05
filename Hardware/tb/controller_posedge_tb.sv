@@ -105,7 +105,13 @@ module controller_posedge_tb;
                                    pipe_rd[0]==prog[dut.PC][20:16]) ||
                                   (pipe_wen[1] && pipe_rd[1]!=0 &&
                                    pipe_rd[1]==prog[dut.PC][20:16]));
-            if(dut.branch_wait !== expected_branch_wait)
+            // END may prefetch an unused/uninitialized fall-through word;
+            // end_flag suppresses issue immediately and invalidates it next edge.
+            if(dut.instruction_valid && !end_flag && dut.instruction !== prog[dut.PC])
+                $fatal(1,"Synchronous instruction/PC misalignment PC=%0d",dut.PC);
+            if(!dut.instruction_valid && (dut.issue_valid !== 0 || dut.mode_opcode !== 6'b111111))
+                $fatal(1,"Invalid instruction issued or reached mode control");
+            if(dut.instruction_valid && !end_flag && dut.branch_wait !== expected_branch_wait)
                 $fatal(1,"CBR dependency-stall mismatch PC=%0d",dut.PC);
             decode_ins=prog[dut.PC]; used_sources=source_mask(decode_ins);
             raw_sources=0;
@@ -117,12 +123,13 @@ module controller_posedge_tb;
                         (pipe_rd[stage_index]==decode_ins[15:11]),
                         (pipe_rd[stage_index]==decode_ins[20:16])});
             expected_data_wait=(|raw_sources);
-            if({dut.data_use_rtemp,dut.data_use_rd,dut.data_use_rb,dut.data_use_ra} !== used_sources ||
-               dut.data_wait !== expected_data_wait)
+            if(dut.instruction_valid && !end_flag &&
+               ({dut.data_use_rtemp,dut.data_use_rd,dut.data_use_rb,dut.data_use_ra} !== used_sources ||
+                dut.data_wait !== expected_data_wait))
                 $fatal(1,"Data source-mask/dependency mismatch PC=%0d",dut.PC);
-            data_stalled=dut.data_wait;
+            data_stalled=dut.instruction_valid && !end_flag && dut.data_wait;
             stalled_ins=decode_ins;
-            branch_stalled=dut.branch_wait;
+            branch_stalled=dut.instruction_valid && !end_flag && dut.branch_wait;
             stalled_pc=dut.PC;
             if(data_stalled) begin
                 data_stalls=data_stalls+1;

@@ -89,6 +89,9 @@ module Controller #(
     logic [DATA_W - 1:0]    extend_imm16;       // Extend immediate to 32 bit
     logic [DATA_W - 1:0]    extend_imm16_shift; // Value of ex_imm16 << 16
     logic [$clog2(MCMEM_W)-1:0] PC;
+    logic [$clog2(MCMEM_W)-1:0] PC_next;
+    logic instruction_valid;
+    logic instruction_read_en;
     logic PC_en;            // Program Counter enable
     logic issue_valid;
     logic memory_busy;
@@ -98,23 +101,31 @@ module Controller #(
     logic branch_wait;
     logic data_wait;
     logic data_use_ra, data_use_rb, data_use_rd, data_use_rtemp;
+    // The synchronous RAM output is the instruction register. Read the NEXT
+    // address on the edge which consumes the current instruction, so PC and
+    // instruction remain aligned without adding an instruction-issue bubble.
+    // A taken branch reads its target directly; a stall holds the RAM output.
+    always_comb begin
+        PC_next = PC;
+        if (end_flag)
+            PC_next = '0;
+        else if (issue_valid)
+            PC_next = PC_sel ? imm16 : PC + 1'b1;
+    end
+    // Bootstrap word zero on the start edge, before start_flag permits issue.
+    // Repeated start pulses during execution must not refetch/reissue it.
+    assign instruction_read_en = !rst && !end_flag &&
+                                 ((!start_flag && start) || issue_valid);
     always_ff @(posedge clk or posedge rst) begin
-        if(rst) begin
-            PC  <= '0;
-        end else if(end_flag) begin
-            PC  <= '0;
-        end else if (start_flag) begin
-            if(issue_valid) begin
-                if(!PC_sel) begin
-                    PC  <= PC + 1;
-                end else begin
-                    PC  <= imm16;
-                end
-            end else begin
-                PC  <= PC;
-            end
-        end else begin
-            PC  <= PC;
+        if (rst) begin
+            PC <= '0;
+            instruction_valid <= 1'b0;
+        end else if (end_flag) begin
+            PC <= '0;
+            instruction_valid <= 1'b0;
+        end else if (instruction_read_en) begin
+            PC <= PC_next;
+            instruction_valid <= 1'b1;
         end
     end
 
@@ -123,13 +134,14 @@ module Controller #(
     mem #(
         .DATA_W(DATA_W),
         .DEPTH(MCMEM_W),
-        .EN_OUT_FF(0)
+        .EN_OUT_FF(1),
+        .RAM_STYLE("block")
     ) MCMem(
         .clk(clk),
         .wen(mcmem_wen),
-        .ren(1'b1),
+        .ren(instruction_read_en),
         .addr_w(mcmem_wr_addr),
-        .addr_r(PC),
+        .addr_r(PC_next),
         .wdata(mcmem_wr_data),
         .rdata(instruction)
     );
@@ -383,7 +395,7 @@ module Controller #(
     assign end_drain = (instruction[31:26] == 6'b010111) &&
                        ((rf_wen_reg1 && rd_reg1 != 0) ||
                         (rf_wen_mid && rd_mid != 0) || (rf_wen_reg2 && rd_reg2 != 0));
-    assign issue_valid = start_flag && PC_en && !end_flag && !fetch_memory_wait &&
+    assign issue_valid = instruction_valid && start_flag && PC_en && !end_flag && !fetch_memory_wait &&
                          !end_drain && !branch_wait && !data_wait;
 
     Mem_ctrl #(

@@ -1,8 +1,9 @@
 # Fused DSP MAC: working implementation
 
 Applied on 2026-10-05 to the working directory, based on main commit cef3738.
-This is the latest synthesis result, superseding the timing baseline in
-FC_TREE_RETIMING.md. Changes are not committed.
+This records the MAC-fusion synthesis baseline, superseding FC_TREE_RETIMING.md.
+The subsequent controller-fetch change and latest timing are documented in
+SYNC_INSTRUCTION_FETCH.md. MAC fusion is committed in b858750.
 
 ## RTL change and numerical behavior
 
