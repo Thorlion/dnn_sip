@@ -142,8 +142,11 @@ module Controller #(
     // Predecode at program-upload time, using the same ISA decoder as execute.
     // Metadata is read on the same edge/enable/address as the instruction,
     // not through another fetch stage. Firmware still uploads 32-bit words.
-    Decoder_MC #(.INST_W(INSTR_W)) upload_decoder(
-        .inst(mcmem_wr_data), .operand_use(upload_operand_use),
+    Decoder_MC #(
+        .INST_W(INSTR_W)
+    ) upload_decoder(
+        .inst(mcmem_wr_data), 
+        .operand_use(upload_operand_use),
         .cbr_signal(upload_cbr)
     );
     generate
@@ -158,7 +161,7 @@ module Controller #(
                     .clk(clk), .wen(mcmem_wen), .ren(instruction_read_en),
                     .addr_w(mcmem_wr_addr), .addr_r(PC_next),
                     .wdata({upload_meta[bank],mcmem_wr_data[bank*8 +: 8]}),
-                    .rdata(bank_output)
+                    .rdata(bank_output) 
                 );
                 assign instruction[bank*8 +: 8] = bank_output[7:0];
                 assign instruction_meta[bank] = bank_output[8];
@@ -227,6 +230,8 @@ module Controller #(
     logic [DATA_W-1:0] branch_ra_data;
     logic [31:0] rf_nonzero;
     logic wb_nonzero;
+    logic [31:0] wb_dest_mask;
+    logic [31:0] visible_nonzero;
     logic branch_ra_nonzero;
     logic [31:0] ex1_dest_mask;
     logic [31:0] rf_pending;
@@ -248,6 +253,17 @@ module Controller #(
         end
     end
 
+    // Predecode the destination on the existing WB-entry edge. Match the
+    // unconditional tag/valid advance, clearing the mask on bubbles and R0.
+    // This is WB metadata, not an extra instruction pipeline stage.
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst)
+            wb_dest_mask <= '0;
+        else
+            wb_dest_mask <= (rf_wen_mid && rd_mid != 0) ?
+                            (32'b1 << rd_mid) : 32'b0;
+    end
+
     // Capture the predicate on the same edge/enable as ALU_REG. This is
     // metadata for the existing WB stage, not another instruction stage.
     always_ff @(posedge clk or posedge rst) begin
@@ -255,7 +271,7 @@ module Controller #(
             wb_nonzero <= 1'b0;
         else if (rf_wen_mid)
             wb_nonzero <= (alu_result != '0);
-    end
+    end 
 
     // Mirror architectural RF writes, including holds and asynchronous reset.
     // Writes to R0 are ignored just as they are in the data register file.
@@ -312,10 +328,12 @@ module Controller #(
     assign branch_wait = cbr_signal && rf_pending[ra];
     assign branch_ra_data = (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == ra) ?
                            alu_result_reg : ra_rd_data;
-    // Keep branch_ra_data only as a verification probe. The hardware branch
-    // uses a one-bit RF/WB selection, with identical newest-writer priority.
-    assign branch_ra_nonzero = (rf_wen_reg2 && rd_reg2 != 0 && rd_reg2 == ra) ?
-                              wb_nonzero : rf_nonzero[ra];
+    // Keep branch_ra_data only as a verification probe. Prepare the latest
+    // flag for every register before RA selects one, preserving WB priority
+    // without comparing the late instruction RA against the binary WB tag.
+    assign visible_nonzero = (rf_nonzero & ~wb_dest_mask) |
+                             ({32{wb_nonzero}} & wb_dest_mask);
+    assign branch_ra_nonzero = visible_nonzero[ra];
 
     assign extend_imm16 = {16'b0, imm16};
     assign extend_imm16_shift = extend_imm16<<16;

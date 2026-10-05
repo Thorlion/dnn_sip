@@ -69,6 +69,9 @@ module controller_sync_fetch_case #(parameter MODEL=1)(output reg finished=0);
         read_word=program_words[read_addr];
         old_pc=dut.PC; old_instruction=dut.instruction; old_valid=dut.instruction_valid;
         old_meta=dut.instruction_meta;
+        if(!rst && dut.wb_dest_mask !==
+           ((dut.rf_wen_reg2 && dut.rd_reg2!=0) ? (32'b1 << dut.rd_reg2) : 32'b0))
+            $fatal(1,"MODEL%0d WB mask/tag alignment mismatch",MODEL);
         // Address changes while read enable is low are intentional. On every
         // enabled edge, however, the candidate must equal the former
         // issue-gated address, including bootstrap and truncated branch targets.
@@ -150,7 +153,7 @@ module controller_sync_fetch_case #(parameter MODEL=1)(output reg finished=0);
             #1;
             if(dut.instruction_valid !== 0 || dut.issue_valid !== 0 || dut.PC !== 0 ||
                dut.rf_wen_reg1 !== 0 || dut.rf_wen_mid !== 0 || dut.rf_wen_reg2 !== 0 ||
-               dut.rf_nonzero !== 0 || dut.wb_nonzero !== 0 ||
+               dut.rf_nonzero !== 0 || dut.wb_nonzero !== 0 || dut.wb_dest_mask !== 0 ||
                dut.rf_pending !== 0 || dut.ex1_dest_mask !== 0)
                 $fatal(1,"MODEL%0d asynchronous reset failed",MODEL);
             repeat(2) @(negedge clk); #2; rst=0;

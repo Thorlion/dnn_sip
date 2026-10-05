@@ -112,6 +112,13 @@ module controller_posedge_tb;
             // Independent producer packets establish both scoreboard stages.
             // Include simultaneous same-register writers, R0 and drain bubbles.
             for(flag_index=0;flag_index<32;flag_index=flag_index+1) begin
+                if(dut.wb_dest_mask[flag_index] !==
+                   (pipe_wen[2] && pipe_rd[2]!=0 && pipe_rd[2]==flag_index))
+                    $fatal(1,"WB one-hot destination mismatch R%0d",flag_index);
+                if(dut.visible_nonzero[flag_index] !==
+                   ((pipe_wen[2] && pipe_rd[2]!=0 && pipe_rd[2]==flag_index) ?
+                    dut.wb_nonzero : dut.rf_nonzero[flag_index]))
+                    $fatal(1,"Visible branch predicate mismatch R%0d",flag_index);
                 if(dut.ex1_dest_mask[flag_index] !==
                    (pipe_wen[0] && pipe_rd[0]!=0 && pipe_rd[0]==flag_index))
                     $fatal(1,"EX1 one-hot destination mismatch R%0d",flag_index);
@@ -462,6 +469,7 @@ module controller_posedge_tb;
         $display("CONTROLLER_RESULT issued=%0d retired=%0d transfers=%0d launches=%0d branch_stalls=%0d cbr_taken=%0d cbr_not_taken=%0d errors=0",issued,retired,head,launches,branch_stalls,cbr_taken,cbr_not_taken);
         $display("CONTROLLER_RAW_RESULT stalls=%0d ra=%0d rb=%0d rd=%0d rtemp=%0d dual=%0d ignored_ra=%0d ignored_rb=%0d ignored_rd=%0d r0_exclusions=%0d errors=0",data_stalls,raw_ra,raw_rb,raw_rd,raw_rt,dual_raw,ignored_ra,ignored_rb,ignored_rd,r0_exclusions);
         $display("CONTROLLER_PREDICATE_RESULT cycles=%0d RF_flags=32 WB_flag=1 CBR=checked errors=0",predicate_checks);
+        $display("CONTROLLER_WB_MASK_RESULT cycles=%0d WB_mask=checked visible_flags=checked bubbles_R0_overwrites=checked errors=0",predicate_checks);
         $display("CONTROLLER_MODE_ACCEPT_RESULT checks=%0d sdc=%0d vsync=%0d end=%0d unused_field_matches=%0d memory_waits=%0d end_drains=%0d errors=0",
                  mode_accept_checks,accepted_sdc,accepted_vsync,accepted_end,mode_field_matches,mode_memory_waits,mode_end_drains);
         $display("TEST_PASS: multiplier-output pipeline, EX1/EX2 tag/data alignment, WB-only forwarding with dependency bubbles, memory packets, backpressure, start/drain/END and restart");
@@ -469,7 +477,7 @@ module controller_posedge_tb;
     end
     always @(posedge rst) begin
         #1;
-        if(dut.wb_nonzero !== 0 || dut.rf_nonzero !== 0 ||
+        if(dut.wb_nonzero !== 0 || dut.rf_nonzero !== 0 || dut.wb_dest_mask !== 0 ||
            dut.rf_pending !== 0 || dut.ex1_dest_mask !== 0)
             $fatal(1,"Branch predicate asynchronous reset failed");
     end
