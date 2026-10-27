@@ -15,21 +15,24 @@ module pc #(
     input  logic                i_en,
     input  logic                i_load,
     input  logic [PC_W-1:0]     i_load_pc,
-    output logic [PC_W-1:0]     o_pc
+    output logic [PC_W-1:0]     o_pc,
+    output logic                o_running
 );
-    logic w_running;
+    logic r_running;
+
+    assign o_running = r_running;
 
     always_ff @(posedge i_clk or negedge i_rst_n) begin
         if (!i_rst_n)
-            w_running <= 1'b0;
+            r_running <= 1'b0;
         else if (i_start)
-            w_running <= 1'b1;
+            r_running <= 1'b1;
     end
 
     always_ff @(posedge i_clk or negedge i_rst_n) begin
         if (!i_rst_n)
             o_pc <= RESET_PC;
-        else if (w_running || i_start) begin
+        else if (r_running || i_start) begin
             if (i_load)
                 o_pc <= i_load_pc;
             else if (i_en)

@@ -16,14 +16,14 @@ module mem #(
     input  logic [DATA_W-1:0]      i_wdata,
     output logic [DATA_W-1:0]      o_rdata
 );
-    (* ram_style = RAM_STYLE *) logic [DATA_W-1:0] w_memory [0:DEPTH-1];
+    (* ram_style = RAM_STYLE *) logic [DATA_W-1:0] r_memory [0:DEPTH-1];
 
     always_ff @(posedge i_clk) begin
         if (i_en) begin
             if (i_we)
-                w_memory[i_addr] <= i_wdata;
+                r_memory[i_addr] <= i_wdata;
             else
-                o_rdata <= w_memory[i_addr];
+                o_rdata <= r_memory[i_addr];
         end
     end
 endmodule

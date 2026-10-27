@@ -49,7 +49,10 @@ The accelerator architecture includes:
 - Follow existing naming conventions and module structure.
 - Prefix input signals with `i_`, for example `i_clk`.
 - Prefix output signals with `o_`, for example `o_out`.
-- Prefix internal signals, including wires and registers, with `w_`, for example `w_data`.
+- Prefix internal wires and combinational signals with `w_`, for example `w_next_pc`.
+- Prefix internal stored signals assigned in `always_ff`, `always_latch`, or equivalent flip-flop/latch processes with `r_`, for example `r_breakpoint` and `r_iteration_count`.
+- Keep the `i_` and `o_` prefixes for module ports, including registered outputs. The `r_` prefix applies to internal state.
+- Choose `w_` or `r_` according to the signal's hardware role; a `logic` declaration alone does not imply a register.
 - Use explicit signal widths and signedness.
 - Avoid unnecessary registers, intermediate signals, and logic duplication.
 - Do not change module interfaces without approval.

@@ -10,9 +10,9 @@ module agu_tb;
     logic [ADDRESS_WIDTH:0] w_ksp_addr;
     logic [ADDRESS_WIDTH:0] w_osp_addr;
     logic [ADDRESS_WIDTH:0] w_bsp_addr;
-    logic [ADDRESS_WIDTH:0] w_input_size;
-    logic [ADDRESS_WIDTH:0] w_stride;
-    logic [ADDRESS_WIDTH:0] w_weight_size;
+    logic [REG_WIDTH-1:0] w_input_size;
+    logic [REG_WIDTH-1:0] w_stride;
+    logic [REG_WIDTH-1:0] w_weight_size;
     wire  [ADDRESS_WIDTH:0] w_next_ib_addr;
     wire  [ADDRESS_WIDTH:0] w_next_ksp_addr;
     wire  [ADDRESS_WIDTH:0] w_next_osp_addr;
@@ -36,6 +36,13 @@ module agu_tb;
     string w_weight_position;
 
     agu #(.ADDRESS_WIDTH(ADDRESS_WIDTH), .REG_WIDTH(REG_WIDTH)) u_agu (
+        // This trace exercises addresses only; hold loop-control state in reset.
+        .i_clk(1'b0),
+        .i_rst_n(1'b0),
+        .i_set_iteration(5'd0),
+        .i_set_breakpoint(1'b0),
+        .i_conditional_loop(1'b0),
+        .i_pc(9'd0),
         .i_ib_addr(w_ib_addr),
         .i_ksp_addr(w_ksp_addr),
         .i_osp_addr(w_osp_addr),
@@ -43,10 +50,21 @@ module agu_tb;
         .i_input_size(w_input_size),
         .i_stride(w_stride),
         .i_weight_size(w_weight_size),
+        // Preserve the file-driven IB indices; advance KSP by one per step.
+        .i_ib_sign(1'b0),
+        .i_ib_offset(10'd0),
+        .i_ksp_sign(1'b0),
+        .i_ksp_offset(9'd1),
+        .i_osp_sign(1'b0),
+        .i_osp_offset(9'd0),
+        .i_bsp_sign(1'b0),
+        .i_bsp_offset(6'd0),
         .o_ib_addr(w_next_ib_addr),
         .o_ksp_addr(w_next_ksp_addr),
         .o_osp_addr(w_next_osp_addr),
-        .o_bsp_addr(w_next_bsp_addr)
+        .o_bsp_addr(w_next_bsp_addr),
+        .o_pc_load(),
+        .o_pc_target()
     );
 
     task log_text(input string i_text);
