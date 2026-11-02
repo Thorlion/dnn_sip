@@ -1,4 +1,4 @@
-module MC_alu #(
+module alu #(
     parameter DATA_W = 32
 )(
     input  logic clk, rst, wen,

@@ -3,16 +3,12 @@
 // IB indices come from a text file; only the KSP address feeds back.
 module agu_tb;
     localparam int ADDRESS_WIDTH = 10;
-    localparam int REG_WIDTH = 16;
     localparam int MAX_ADDRESS = (2 ** (ADDRESS_WIDTH + 1)) - 1;
 
     logic [ADDRESS_WIDTH:0] w_ib_addr;
     logic [ADDRESS_WIDTH:0] w_ksp_addr;
     logic [ADDRESS_WIDTH:0] w_osp_addr;
     logic [ADDRESS_WIDTH:0] w_bsp_addr;
-    logic [REG_WIDTH-1:0] w_input_size;
-    logic [REG_WIDTH-1:0] w_stride;
-    logic [REG_WIDTH-1:0] w_weight_size;
     wire  [ADDRESS_WIDTH:0] w_next_ib_addr;
     wire  [ADDRESS_WIDTH:0] w_next_ksp_addr;
     wire  [ADDRESS_WIDTH:0] w_next_osp_addr;
@@ -35,7 +31,7 @@ module agu_tb;
     string w_extra_token;
     string w_weight_position;
 
-    agu #(.ADDRESS_WIDTH(ADDRESS_WIDTH), .REG_WIDTH(REG_WIDTH)) u_agu (
+    agu #(.ADDRESS_WIDTH(ADDRESS_WIDTH)) u_agu (
         // This trace exercises addresses only; hold loop-control state in reset.
         .i_clk(1'b0),
         .i_rst_n(1'b0),
@@ -47,9 +43,6 @@ module agu_tb;
         .i_ksp_addr(w_ksp_addr),
         .i_osp_addr(w_osp_addr),
         .i_bsp_addr(w_bsp_addr),
-        .i_input_size(w_input_size),
-        .i_stride(w_stride),
-        .i_weight_size(w_weight_size),
         // Preserve the file-driven IB indices; advance KSP by one per step.
         .i_ib_sign(1'b0),
         .i_ib_offset(10'd0),
@@ -91,9 +84,6 @@ module agu_tb;
         if (!w_input_file)
             $fatal(1, "Cannot open input file: %s", w_input_path);
 
-        w_input_size = w_size_arg;
-        w_stride = w_stride_arg;
-        w_weight_size = w_kernel_arg;
         w_ib_addr = '0;
         w_ksp_addr = '0;
         w_osp_addr = '0;
@@ -104,7 +94,7 @@ module agu_tb;
         log_text("AGU feedback trace: manually supplied IB indices, KSP feedback starting at zero.");
         log_text($sformatf("Input file: %s", w_input_path));
         log_text($sformatf("input_size=%0d stride=%0d weight_size=%0d address_bits=%0d",
-            w_input_size, w_stride, w_weight_size, ADDRESS_WIDTH + 1));
+            w_size_arg, w_stride_arg, w_kernel_arg, ADDRESS_WIDTH + 1));
         log_text("Each data line is one step. KSP_CURRENT is paired with that line's IB_INDEX.");
         log_text("WEIGHT_ROW/COL assume row-major kernel storage: row=KSP/K, col=KSP%K.");
         log_text("This is a trace of the current RTL, not a convolution-correctness check.");

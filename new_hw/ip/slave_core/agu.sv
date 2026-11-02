@@ -9,7 +9,6 @@
 // Drive flow-control fields to zero on cycles without an issued instruction.
 module agu # (
     parameter ADDRESS_WIDTH = 10,
-    parameter REG_WIDTH = 16,
     parameter int unsigned PC_W = 9
 )(
     input logic i_clk,
@@ -23,10 +22,6 @@ module agu # (
     input logic [ADDRESS_WIDTH:0] i_ksp_addr,
     input logic [ADDRESS_WIDTH:0] i_osp_addr,
     input logic [ADDRESS_WIDTH:0] i_bsp_addr,
-
-    input logic [REG_WIDTH-1:0] i_input_size,
-    input logic [REG_WIDTH-1:0] i_stride,
-    input logic [REG_WIDTH-1:0] i_weight_size,
 
     input logic       i_ib_sign,
     input logic [9:0] i_ib_offset,

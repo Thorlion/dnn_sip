@@ -1,4 +1,4 @@
-// Structural connection of the configuration registers, AGU and memories.
+// Structural connection of the PC, AGU, datapath and memories.
 // All memories contain 16-bit words:
 //   KSP: 64 banks x 512 words (1 KiB per bank).
 //   OSP: 64 banks x 512 words (1 KiB per bank).
@@ -12,8 +12,7 @@
 // Each memory address uses its own sign bit and offset magnitude:
 // IB 10 bits, KSP/OSP 9 bits, BSP 6 bits.
 // Each bank performs one synchronous read or write per enabled rising edge.
-module dsip_core #(
-    parameter int unsigned REG_W = 16,
+module dsip_slave #(
     parameter int unsigned PC_W = 9
 )(
     input  logic                 i_clk,
@@ -39,11 +38,6 @@ module dsip_core #(
     // AGU branch outputs are also exposed for observation.
     output logic                 o_pc_load,
     output logic [PC_W-1:0]      o_pc_target,
-
-    input  logic                 i_cfg_we,
-    input  logic [2:0]           i_cfg_offset,
-    input  logic [REG_W-1:0]     i_cfg_wdata,
-    output logic [REG_W-1:0]     o_cfg_rdata,
 
     input  logic [9:0]           i_ib_addr,
     input  logic [8:0]           i_ksp_addr,
@@ -92,13 +86,6 @@ module dsip_core #(
     localparam int KSP_ADDR_W = 9;
     localparam int OSP_ADDR_W = 9;
     localparam int BSP_ADDR_W = 6;
-
-    logic [REG_W-1:0] w_stride;
-    logic [REG_W-1:0] w_input_size;
-    logic [REG_W-1:0] w_input_channels;
-    logic [REG_W-1:0] w_weight_size;
-    logic [REG_W-1:0] w_weight_channels;
-    logic w_linear_activation;
 
     logic [IB_ADDR_W-1:0] w_ksp_addr;
     logic [IB_ADDR_W-1:0] w_osp_addr;
@@ -205,25 +192,9 @@ module dsip_core #(
         .o_running(w_pc_running)
     );
 
-    reg_map #(.REG_W(REG_W)) u_reg_map (
-        .i_clk(i_clk),
-        .i_rst_n(i_rst_n),
-        .i_we(i_cfg_we),
-        .i_offset(i_cfg_offset),
-        .i_wdata(i_cfg_wdata),
-        .o_rdata(o_cfg_rdata),
-        .o_stride(w_stride),
-        .o_input_size(w_input_size),
-        .o_input_channels(w_input_channels),
-        .o_weight_size(w_weight_size),
-        .o_weight_channels(w_weight_channels),
-        .o_linear_activation(w_linear_activation)
-    );
-
     // IF stage
     // ADDRESS_WIDTH is the AGU's highest address bit, not a bit count.
-    // Configuration inputs use REG_WIDTH independently of address width.
-    agu #(.ADDRESS_WIDTH(IB_ADDR_W-1), .REG_WIDTH(REG_W), .PC_W(PC_W)) u_agu (
+    agu #(.ADDRESS_WIDTH(IB_ADDR_W-1), .PC_W(PC_W)) u_agu (
         .i_clk(i_clk),
         .i_rst_n(i_rst_n),
         .i_set_iteration(w_set_iteration),
@@ -234,9 +205,6 @@ module dsip_core #(
         .i_ksp_addr({{(IB_ADDR_W-KSP_ADDR_W){1'b0}}, i_ksp_addr}),
         .i_osp_addr({{(IB_ADDR_W-OSP_ADDR_W){1'b0}}, i_osp_addr}),
         .i_bsp_addr({{(IB_ADDR_W-BSP_ADDR_W){1'b0}}, i_bsp_addr}),
-        .i_input_size(w_input_size),
-        .i_stride(w_stride),
-        .i_weight_size(w_weight_size),
         .i_ib_sign(w_ib_sign),
         .i_ib_offset(w_ib_offset),
         .i_ksp_sign(w_ksp_sign),

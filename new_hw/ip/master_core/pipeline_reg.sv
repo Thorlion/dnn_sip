@@ -1,0 +1,38 @@
+import riscv_pkg::*;
+
+/**
+ * @brief Generic Pipeline Register
+ * @details Stores data between pipeline stages to separate combinational logic blocks.
+ *          Supports synchronous reset, synchronous clear (flush), and enable (stall).
+ * 
+ * @param WIDTH   Width of the data bus to store (default: 32)
+ * 
+ * @param clk     System Clock
+ * @param rst     System Reset (Active High)
+ * @param en      Enable signal (1 = Update, 0 = Hold/Stall)
+ * @param clear   Synchronous Clear/Flush (1 = Reset to 0)
+ * @param in      Input Data
+ * @param out     Output Data
+ */
+module PipelineRegister #(
+    parameter WIDTH = 32
+)(
+    input  logic             clk, 
+    input  logic             rst, 
+    input  logic             en,    
+    input  logic             clear,
+    input  logic [WIDTH-1:0] in,   
+    output logic [WIDTH-1:0] out   
+);
+    always_ff @(posedge clk) begin : PipelineRegLogic
+        if (rst) begin : Reset
+            out <= '0; 
+        end else if (clear) begin : Flush
+            out <= '0; 
+        end else if (en) begin : Update
+            out <= in; 
+        end
+        // --- Else: Hold current value (Stall) --- 
+    end
+
+endmodule
