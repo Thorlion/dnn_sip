@@ -30,10 +30,14 @@ import riscv_pkg::*;
  * @param o_dma_csr_data   DMA CSR data from the EX-stage forwarded rs1 value
  * @param o_wen_dma0       DMA0 CSR Write Enable in EX
  * @param o_wen_dma1       DMA1 CSR Write Enable in EX
+ * @param o_slave_start    SCR slave-start strobe in EX
+ * @param o_slave_pc       Forwarded rs1 slave PC, valid with o_slave_start
+ * @param i_slave_row_done One-cycle row-completion event in the same clock domain
  */
 module PipelinedCPU (
     input  logic             clk,
     input  logic             rst,
+    input  logic             i_slave_row_done,
     output logic [ALEN-1:0]  imem_addr,
     input  logic [31:0]      imem_data,
     output logic             imem_en,
@@ -46,7 +50,9 @@ module PipelinedCPU (
     output logic [XLEN-1:0]  o_dma_csr_offset,
     output logic [XLEN-1:0]  o_dma_csr_data,
     output logic             o_wen_dma0,
-    output logic             o_wen_dma1
+    output logic             o_wen_dma1,
+    output logic             o_slave_start,
+    output logic [XLEN-1:0]  o_slave_pc
 );
     // ------------------------------------------- //
     // -------- Pipeline Register Widths --------- //
@@ -57,8 +63,8 @@ module PipelinedCPU (
 
     // ID/EX: 
     // Data: PC(X), PC+4(X), RD1(X), RD2(X), Imm(X), rs1(5), rs2(5), rd(5), funct3(3)
-    // Control: RegWrite(1), MemWrite(1), ALUControl(4), ALUSrc(1), ALUSrcA(2), MemToReg(2), Branch(1), Jump(1), Jalr(1), Dma0CsrWrite(1), Dma1CsrWrite(1)
-    localparam ID_EX_WIDTH   = (5 * XLEN) + 18 + 16;
+    // Control: RegWrite(1), MemWrite(1), ALUControl(4), ALUSrc(1), ALUSrcA(2), MemToReg(2), Branch(1), Jump(1), Jalr(1), Dma0CsrWrite(1), Dma1CsrWrite(1), SlaveStart(1)
+    localparam ID_EX_WIDTH   = (5 * XLEN) + 18 + 17;
 
     // EX/MEM:
     // Data: ALUResult(X), WriteData(X), rd(5), PC+4(X), funct3(3), rs2(5)
@@ -99,6 +105,8 @@ module PipelinedCPU (
     logic [1:0]      id_wb_mux_sel;
     logic            id_branch, id_jump, id_jalr;
     logic            w_id_wen_dma0, w_id_wen_dma1;
+    logic            w_id_slave_start;
+    logic            w_id_wait_row;
 
     // ID/EX Register Signals
     logic [XLEN-1:0] id_ex_pc, id_ex_pc_plus_4;
@@ -114,6 +122,7 @@ module PipelinedCPU (
     logic [1:0]      id_ex_wb_mux_sel;
     logic            id_ex_branch, id_ex_jump, id_ex_jalr;
     logic            r_id_ex_wen_dma0, r_id_ex_wen_dma1;
+    logic            r_id_ex_slave_start;
 
     // --- EX Stage Signals ---
     logic [XLEN-1:0] ex_alu_result, ex_alu_b_input; 
@@ -151,8 +160,40 @@ module PipelinedCPU (
     logic [1:0]      forward_a, forward_b; 
     logic            stall_if, stall_id, flush_ex, flush_id;
     logic            branch_taken_ex; 
+    logic            w_hazard_stall_if, w_hazard_stall_id;
+    logic            w_hazard_flush_ex;
+    logic            r_row_done_pending;
+    logic            w_row_done_available;
+    logic            w_wait_row_stall;
+    logic            w_consume_row_done;
 
     assign branch_taken_ex = branch_taken | id_ex_jalr;
+
+    // WAIT_ROW stays in ID while older EX/MEM/WB instructions drain. Insert
+    // EX bubbles rather than holding an instruction that could repeat a DMA
+    // write, SCR pulse, store, or register write. A taken older branch kills
+    // a wrong-path wait without consuming its event.
+    assign w_row_done_available = (r_row_done_pending || i_slave_row_done) &&
+                                  !o_slave_start;
+    assign w_wait_row_stall = w_id_wait_row && !w_row_done_available &&
+                              !branch_taken_ex && !rst;
+    assign w_consume_row_done = w_id_wait_row && w_row_done_available &&
+                                !w_hazard_stall_id && !branch_taken_ex && !rst;
+    assign stall_if = w_hazard_stall_if || w_wait_row_stall;
+    assign stall_id = w_hazard_stall_id || w_wait_row_stall;
+    assign flush_ex = w_hazard_flush_ex || w_wait_row_stall;
+
+    // One pending event, cleared by reset or a new SCR. A live event can be
+    // consumed directly. If an older pending event is consumed as a new event
+    // arrives, retain the new one. Multiple unconsumed events otherwise coalesce.
+    always_ff @(posedge clk) begin
+        if (rst || o_slave_start)
+            r_row_done_pending <= 1'b0;
+        else if (w_consume_row_done)
+            r_row_done_pending <= r_row_done_pending && i_slave_row_done;
+        else if (i_slave_row_done)
+            r_row_done_pending <= 1'b1;
+    end
 
     // -------------------------------------------------- //
     // ----------- IF: Instruction Fetch Stage ---------- //
@@ -232,7 +273,9 @@ module PipelinedCPU (
         .jump(id_jump),
         .jalr(id_jalr),
         .o_wen_dma0(w_id_wen_dma0),
-        .o_wen_dma1(w_id_wen_dma1)
+        .o_wen_dma1(w_id_wen_dma1),
+        .o_slave_start(w_id_slave_start),
+        .o_wait_row(w_id_wait_row)
     );
 
     HazardUnit hazard_unit_inst (
@@ -243,9 +286,9 @@ module PipelinedCPU (
         .id_ex_mem_read(id_ex_wb_mux_sel[0]), 
         .branch_taken_ex(branch_taken_ex),
         .jump_id_stage(id_jump),
-        .stall_if(stall_if),
-        .stall_id(stall_id),
-        .flush_ex(flush_ex),
+        .stall_if(w_hazard_stall_if),
+        .stall_id(w_hazard_stall_id),
+        .flush_ex(w_hazard_flush_ex),
         .flush_id(flush_id)
     );
 
@@ -263,7 +306,8 @@ module PipelinedCPU (
             // Control Payload
             id_reg_write, id_mem_write,
             id_alu_control, id_op_a_sel, id_op_b_sel, id_wb_mux_sel, 
-            id_branch, id_jump, id_jalr, w_id_wen_dma0, w_id_wen_dma1
+            id_branch, id_jump, id_jalr, w_id_wen_dma0, w_id_wen_dma1,
+            w_id_slave_start
         }),
         .out({
             // Data Payload
@@ -273,7 +317,8 @@ module PipelinedCPU (
             // Control Payload
             id_ex_reg_write, id_ex_mem_write,
             id_ex_alu_control, id_ex_op_a_sel, id_ex_op_b_sel, id_ex_wb_mux_sel, 
-            id_ex_branch, id_ex_jump, id_ex_jalr, r_id_ex_wen_dma0, r_id_ex_wen_dma1
+            id_ex_branch, id_ex_jump, id_ex_jalr, r_id_ex_wen_dma0, r_id_ex_wen_dma1,
+            r_id_ex_slave_start
         })
     );
 
@@ -311,7 +356,8 @@ module PipelinedCPU (
         .branch_taken(branch_taken),
         .branch_target(ex_branch_target),
         .rs2_data_forwarded(ex_alu_b_input),
-        .o_dma_csr_data(o_dma_csr_data)
+        .o_dma_csr_data(o_dma_csr_data),
+        .o_slave_pc(o_slave_pc)
     );
 
     // The ID/EX register clears both DMA enables on reset or flush. CSR writes
@@ -319,6 +365,11 @@ module PipelinedCPU (
     assign o_dma_csr_offset = id_ex_imm;
     assign o_wen_dma0 = r_id_ex_wen_dma0 && !rst;
     assign o_wen_dma1 = r_id_ex_wen_dma1 && !rst;
+
+    // SCR is active for its EX cycle. Reset/flush clear its ID/EX control bit,
+    // including bubbles inserted for a load-use hazard or a taken branch.
+    // The receiver samples o_slave_pc on the edge where this strobe is high.
+    assign o_slave_start = r_id_ex_slave_start && !rst;
 
     // --- EX/MEM Pipeline Register ---
     PipelineRegister #(EX_MEM_WIDTH) ex_mem_reg (

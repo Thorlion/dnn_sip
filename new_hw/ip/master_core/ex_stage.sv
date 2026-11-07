@@ -28,6 +28,7 @@ import riscv_pkg::*;
  * @param branch_target      Calculated Branch Target Address
  * @param rs2_data_forwarded Forwarded rs2 data (for Store operations)
  * @param o_dma_csr_data     Forwarded rs1 data for a DMA CSR write
+ * @param o_slave_pc         Forwarded rs1 value for an SCR slave PC
  */
 module EX_Stage (
     input  logic [XLEN-1:0] pc,
@@ -48,7 +49,8 @@ module EX_Stage (
     output logic            branch_taken,
     output logic [XLEN-1:0] branch_target,
     output logic [XLEN-1:0] rs2_data_forwarded,
-    output logic [XLEN-1:0] o_dma_csr_data
+    output logic [XLEN-1:0] o_dma_csr_data,
+    output logic [XLEN-1:0] o_slave_pc
 );
     // --- ALU Operand MUXing with Forwarding (A and B) ---
     logic [XLEN-1:0] ex_alu_in_a_fwd;
@@ -64,8 +66,9 @@ module EX_Stage (
         endcase
     end
 
-    // DMA writes use rs1 after forwarding, before the ALU source mux or add.
+    // DMA writes and SCR use rs1 after forwarding, before ALU source selection.
     assign o_dma_csr_data = ex_alu_in_a_fwd;
+    assign o_slave_pc = ex_alu_in_a_fwd;
 
     always_comb begin : ForwardB_MUX
         case (forward_b)

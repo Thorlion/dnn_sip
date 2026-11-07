@@ -18,7 +18,7 @@ package riscv_pkg;
     parameter  logic [XLEN-1:0] NOP_A            = 32'h00000013; // ADDI x0, x0, 0
     localparam int              LED_WIDTH        = 4;
 
-    // --- OPCODES (RV32I and DMA extension) ---
+    // --- OPCODES (RV32I, DMA and slave-control extensions) ---
     typedef enum logic [6:0] {
         OP_R_TYPE   = 7'b0110011, // add, sub, sll...
         OP_I_TYPE   = 7'b0010011, // addi, slti...
@@ -31,7 +31,9 @@ package riscv_pkg;
         OP_AUIPC    = 7'b0010111, // auipc (Add Upper Immediate to PC)
         OP_SYSTEM   = 7'b1110011, // ecall, csrrw...
         OP_FENCE    = 7'b0001111,  // fence
-        OP_DMA_CONFIG = 7'b1111000 // I-type DMA CSR write: offset = imm, data = rs1
+        OP_DMA_CONFIG = 7'b1111000, // I-type DMA CSR write: offset = imm, data = rs1
+        OP_SCR        = 7'b0001011, // Slave start: PC = forwarded rs1 (custom-0)
+        OP_WAIT_ROW   = 7'b0101011  // Consume one slave row-completion event (custom-1)
     } opcode_t;
 
     // --- ALU OPERATIONS ---

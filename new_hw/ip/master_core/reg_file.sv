@@ -33,6 +33,9 @@ module RegFile (
     output logic [XLEN-1:0]  read_data1,    
     output logic [XLEN-1:0]  read_data2 
 );
+    // Declare the array before functions that reference it (ModelSim lookup).
+    logic [XLEN-1:0] register_memory [0:REG_SIZE-1];
+
     /**
      * @brief Check if write-through forwarding is needed
      * @param rs Source register being read
@@ -70,9 +73,6 @@ module RegFile (
             return register_memory[rs];
         end
     endfunction
-
-    // --- Register Memory Array ---
-    logic [XLEN-1:0] register_memory [0:REG_SIZE-1];
 
     // --- Asynchronous Read Ports ---
     assign read_data1 = read_register(rs1, rd, RegWrite, write_data);

@@ -1,0 +1,111 @@
+// Actual RV32 program for master_dma_tb. All DMA_CONFIG instructions use x5
+// as rs1, rd = x0, opcode = 0x78, and funct3 as the DMA selector.
+// CSR byte offsets: source = 0, destination = 4, size = 8, START = 12.
+// Payload addresses and sizes are in 16-bit words.
+
+// Phase 0: DMA0 OM[16..23] -> IB[4..11].
+01000293 // addi x5, x0, 16
+00028078 // DMA_CONFIG dma0, source, x5
+00400293 // addi x5, x0, 4
+00428078 // DMA_CONFIG dma0, destination, x5
+00800293 // addi x5, x0, 8
+00828078 // DMA_CONFIG dma0, size, x5
+
+// DMA1 OB[8..15] -> OM[128..135]. Each ADDI immediately feeds a CSR write.
+00800293 // addi x5, x0, 8
+00029078 // DMA_CONFIG dma1, source, x5
+08000293 // addi x5, x0, 128
+00429078 // DMA_CONFIG dma1, destination, x5
+00800293 // addi x5, x0, 8
+00829078 // DMA_CONFIG dma1, size, x5
+
+// Invalid selectors must neither corrupt source CSRs nor start either DMA.
+0fa00293 // addi x5, x0, 250
+0002a078 // funct3 = 2, source
+0002b078 // funct3 = 3, source
+0002c078 // funct3 = 4, source
+0002d078 // funct3 = 5, source
+0002e078 // funct3 = 6, source
+0002f078 // funct3 = 7, source
+00100293 // addi x5, x0, 1
+00c2a078 // funct3 = 2, START
+00c2b078 // funct3 = 3, START
+00c2c078 // funct3 = 4, START
+00c2d078 // funct3 = 5, START
+00c2e078 // funct3 = 6, START
+00c2f078 // funct3 = 7, START
+00c28078 // DMA_CONFIG dma0, START, x5
+00c29078 // DMA_CONFIG dma1, START, x5
+
+// Fixed test-program spacing; no CPU-visible DMA completion polling is added.
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+
+// Phase 1: one-word transfers, independently reconfiguring both CSR banks.
+02000293 // addi x5, x0, 32
+00028078 // DMA0 source = 32
+01400293 // addi x5, x0, 20
+00428078 // DMA0 destination = 20
+00100293 // addi x5, x0, 1
+00828078 // DMA0 size = 1
+01800293 // addi x5, x0, 24
+00029078 // DMA1 source = 24
+0a000293 // addi x5, x0, 160
+00429078 // DMA1 destination = 160
+00100293 // addi x5, x0, 1
+00829078 // DMA1 size = 1
+00c28078 // DMA0 START = 1
+00c29078 // DMA1 START = 1
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+00000013
+
+// Phase 2: zero words; both done outputs must pulse without memory accesses.
+0ff00293 // addi x5, x0, 255
+00028078 // DMA0 source = 255
+03f00293 // addi x5, x0, 63
+00428078 // DMA0 destination = 63
+00000293 // addi x5, x0, 0
+00828078 // DMA0 size = 0
+03f00293 // addi x5, x0, 63
+00029078 // DMA1 source = 63
+0ff00293 // addi x5, x0, 255
+00429078 // DMA1 destination = 255
+00000293 // addi x5, x0, 0
+00829078 // DMA1 size = 0
+00100293 // addi x5, x0, 1
+00c28078 // DMA0 START = 1
+00c29078 // DMA1 START = 1
+00000013
+00000013
+00000013
+00000013
+0000006f // jal x0, 0: remain here after the test program
+00000013 // safe prefetched word after the terminal jump

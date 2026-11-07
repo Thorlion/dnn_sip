@@ -1,10 +1,10 @@
 `timescale 1ns/1ps
 
 // Core stimulus scaffold. Only IMEM loading is implemented here.
-// IB/KSP loading and current-address updates will be specified separately.
+// IB/KSP loading will be specified separately; address state is in the core.
 module dsip_core_tb;
     localparam int unsigned PC_W = 9;
-    localparam int unsigned INSTR_W = 58;
+    localparam int unsigned INSTR_W = 64;
     localparam int unsigned DATA_W = 16;
     localparam int unsigned LANES = 64;
     localparam int unsigned IMEM_DEPTH = 2 ** PC_W;
@@ -13,29 +13,36 @@ module dsip_core_tb;
     logic r_clk = 1'b0;
     logic r_rst_n;
     logic r_start;
+    logic [PC_W-1:0] r_start_pc;
     logic r_pc_en;
     logic r_imem_we;
-    logic [PC_W-1:0] r_imem_waddr;
-    logic [INSTR_W-1:0] r_imem_wdata;
+    logic [PC_W+1:0] r_imem_waddr;
+    logic [DATA_W-1:0] r_imem_wdata;
     logic [INSTR_W-1:0] r_imem_image [0:IMEM_DEPTH-1];
 
-    logic [9:0] r_ib_addr;
-    logic [8:0] r_ksp_addr;
-    logic [8:0] r_osp_addr;
-    logic [5:0] r_bsp_addr;
     logic [LANES-1:0] r_ksp_en;
     logic [LANES-1:0] r_ksp_we;
+    logic r_ksp_wbuf_sel;
+    logic [7:0] r_ksp_waddr;
     logic [DATA_W-1:0] r_ksp_wdata [0:LANES-1];
     logic [LANES-1:0] r_osp_en;
     logic [LANES-1:0] r_osp_we;
+    logic r_ob_ren;
+    logic [9:0] r_ob_raddr;
+    logic r_ob_rbuf_sel;
     logic r_ib_en;
     logic r_ib_we;
+    logic r_ib_wbuf_sel;
+    logic [9:0] r_ib_waddr;
     logic [DATA_W-1:0] r_ib_wdata;
     logic r_bsp_en;
     logic r_bsp_we;
+    logic [5:0] r_bsp_waddr;
     logic [DATA_W-1:0] r_bsp_wdata;
 
     wire [PC_W-1:0] w_pc;
+    wire w_done;
+    wire w_row_done;
     wire [8:0] w_exe_instruction;
     wire w_exe_valid;
     wire [1:0] w_nl_instruction;
@@ -43,13 +50,15 @@ module dsip_core_tb;
     wire w_pc_load;
     wire [PC_W-1:0] w_pc_target;
     wire [9:0] w_ib_addr;
-    wire [8:0] w_ksp_addr;
+    wire [7:0] w_ksp_addr;
     wire [8:0] w_osp_addr;
     wire [5:0] w_bsp_addr;
+    wire [9:0] w_ob_addr;
     wire [DATA_W-1:0] w_ksp_rdata [0:LANES-1];
     wire [DATA_W-1:0] w_osp_rdata [0:LANES-1];
     wire [DATA_W-1:0] w_ib_rdata;
     wire [DATA_W-1:0] w_bsp_rdata;
+    wire [DATA_W-1:0] w_ob_rdata;
     wire signed [DATA_W-1:0] w_mli_out [0:LANES-1];
     wire signed [DATA_W-1:0] w_mlk_out [0:LANES-1];
     wire signed [DATA_W-1:0] w_mlo_out [0:LANES-1];
@@ -64,12 +73,15 @@ module dsip_core_tb;
 
     always #(CLK_PERIOD / 2) r_clk = ~r_clk;
 
-    dsip_core #(.PC_W(PC_W)) u_core (
+    dsip_slave #(.PC_W(PC_W)) u_core (
         .i_clk(r_clk),
         .i_rst_n(r_rst_n),
         .i_start(r_start),
+        .i_start_pc(r_start_pc),
         .i_pc_en(r_pc_en),
         .o_pc(w_pc),
+        .o_done(w_done),
+        .o_row_done(w_row_done),
         .i_imem_we(r_imem_we),
         .i_imem_waddr(r_imem_waddr),
         .i_imem_wdata(r_imem_wdata),
@@ -79,23 +91,28 @@ module dsip_core_tb;
         .o_nl_valid(w_nl_valid),
         .o_pc_load(w_pc_load),
         .o_pc_target(w_pc_target),
-        .i_ib_addr(r_ib_addr),
-        .i_ksp_addr(r_ksp_addr),
-        .i_osp_addr(r_osp_addr),
-        .i_bsp_addr(r_bsp_addr),
         .o_ib_addr(w_ib_addr),
         .o_ksp_addr(w_ksp_addr),
         .o_osp_addr(w_osp_addr),
         .o_bsp_addr(w_bsp_addr),
+        .o_ob_addr(w_ob_addr),
         .i_ksp_en(r_ksp_en),
         .i_ksp_we(r_ksp_we),
+        .i_ksp_wbuf_sel(r_ksp_wbuf_sel),
+        .i_ksp_waddr(r_ksp_waddr),
         .i_ksp_wdata(r_ksp_wdata),
         .o_ksp_rdata(w_ksp_rdata),
         .i_osp_en(r_osp_en),
         .i_osp_we(r_osp_we),
         .o_osp_rdata(w_osp_rdata),
+        .i_ob_ren(r_ob_ren),
+        .i_ob_raddr(r_ob_raddr),
+        .i_ob_rbuf_sel(r_ob_rbuf_sel),
+        .o_ob_rdata(w_ob_rdata),
         .i_ib_en(r_ib_en),
         .i_ib_we(r_ib_we),
+        .i_ib_wbuf_sel(r_ib_wbuf_sel),
+        .i_ib_waddr(r_ib_waddr),
         .i_ib_wdata(r_ib_wdata),
         .o_ib_rdata(w_ib_rdata),
         // These ports are currently bypassed inside the core; keep them high.
@@ -109,6 +126,7 @@ module dsip_core_tb;
         .o_eoa_out(w_eoa_out),
         .i_bsp_en(r_bsp_en),
         .i_bsp_we(r_bsp_we),
+        .i_bsp_waddr(r_bsp_waddr),
         .i_bsp_wdata(r_bsp_wdata),
         .o_bsp_rdata(w_bsp_rdata)
     );
@@ -116,30 +134,37 @@ module dsip_core_tb;
     task automatic load_imem;
         integer r_file;
         integer r_addr;
+        integer r_word;
+        logic [63:0] r_record;
         begin
             r_file = $fopen(r_imem_path, "r");
             if (!r_file)
                 $fatal(1, "Cannot open IMEM instruction file: %s", r_imem_path);
             $fclose(r_file);
 
-            // Unspecified IMEM words contain the zero instruction.
+            // Unspecified instruction slots contain the zero instruction.
             // Data memories are deliberately not initialized by this task.
             for (r_addr = 0; r_addr < IMEM_DEPTH; r_addr = r_addr + 1)
                 r_imem_image[r_addr] = '0;
             $readmemb(r_imem_path, r_imem_image);
 
-            // Set up each write on a falling edge for the next rising edge.
+            // Program each 64-bit instruction as four 16-bit words, low word
+            // first. Each write is set up before its accepting edge.
             for (r_addr = 0; r_addr < IMEM_DEPTH; r_addr = r_addr + 1) begin
-                @(negedge r_clk);
-                r_imem_we = 1'b1;
-                r_imem_waddr = r_addr[PC_W-1:0];
-                r_imem_wdata = r_imem_image[r_addr];
+                r_record = r_imem_image[r_addr];
+                for (r_word = 0; r_word < 4; r_word = r_word + 1) begin
+                    @(negedge r_clk);
+                    r_imem_we = 1'b1;
+                    r_imem_waddr = {r_addr[PC_W-1:0], r_word[1:0]};
+                    r_imem_wdata = r_record[r_word*DATA_W +: DATA_W];
+                end
             end
             @(negedge r_clk);
             r_imem_we = 1'b0;
             r_imem_waddr = '0;
             r_imem_wdata = '0;
-            $display("IMEM programmed from %s (%0d locations).", r_imem_path, IMEM_DEPTH);
+            $display("IMEM programmed from %s (%0d instructions, %0d 16-bit words).",
+                     r_imem_path, IMEM_DEPTH, 4*IMEM_DEPTH);
         end
     endtask
 
@@ -160,10 +185,10 @@ module dsip_core_tb;
     always @(posedge r_clk) begin
         if (r_trace_en) begin
             $fdisplay(r_log,
-                "%0d | %0d | %b | %015h | %b:%03h | %b:%01h | %b:%0d | %0d,%0d,%0d,%0d | %016h:%0d | %0d",
+                "%0d | %0d | %b | %016h | %b:%03h | %b:%01h | %b:%0d | %0d,%0d,%0d,%0d,%0d | %016h:%0d | %0d",
                 r_cycle, w_pc, u_core.w_issue, u_core.w_decode_instruction,
                 w_exe_valid, w_exe_instruction, w_nl_valid, w_nl_instruction,
-                w_pc_load, w_pc_target, w_ib_addr, w_ksp_addr, w_osp_addr, w_bsp_addr,
+                w_pc_load, w_pc_target, w_ib_addr, w_ksp_addr, w_osp_addr, w_bsp_addr, w_ob_addr,
                 u_core.w_osp_we, u_core.w_nl_osp_addr, $signed(w_eoa_out[0]));
             r_cycle = r_cycle + 1;
         end
@@ -172,23 +197,28 @@ module dsip_core_tb;
     initial begin
         r_rst_n = 1'b0;
         r_start = 1'b0;
+        r_start_pc = '0;
         r_pc_en = 1'b0;
         r_imem_we = 1'b0;
         r_imem_waddr = '0;
         r_imem_wdata = '0;
-        r_ib_addr = '0;
-        r_ksp_addr = '0;
-        r_osp_addr = '0;
-        r_bsp_addr = '0;
         r_ksp_en = '1;
         r_ksp_we = '0;
+        r_ksp_wbuf_sel = 1'b0;
+        r_ksp_waddr = '0;
         r_osp_en = '1;
         r_osp_we = '1;
+        r_ob_ren = 1'b0;
+        r_ob_raddr = '0;
+        r_ob_rbuf_sel = 1'b0;
         r_ib_en = 1'b1;
         r_ib_we = 1'b0;
+        r_ib_wbuf_sel = 1'b0;
+        r_ib_waddr = '0;
         r_ib_wdata = '0;
         r_bsp_en = 1'b1;
         r_bsp_we = 1'b0;
+        r_bsp_waddr = '0;
         r_bsp_wdata = '0;
         for (int r_lane = 0; r_lane < LANES; r_lane = r_lane + 1)
             r_ksp_wdata[r_lane] = '0;
@@ -206,8 +236,8 @@ module dsip_core_tb;
         if (!r_log)
             $fatal(1, "Cannot open core_output.log");
         $fdisplay(r_log, "DSIP core trace; pre-edge samples, EOA lane 0 is signed fixed point (8 fractional bits).");
-        $fdisplay(r_log, "IB/KSP loading is pending; data memories are not initialized. Current address inputs stay at zero.");
-        $fdisplay(r_log, "CYCLE | PC | IF_VALID | IF_WORD | EXE_VALID:WORD | NL_VALID:WORD | PC_LOAD:TARGET | IB,KSP,OSP,BSP_ADDR | OSP_WE:WRITE_ADDR | EOA0");
+        $fdisplay(r_log, "IB/KSP loading is pending; data memories are not initialized. IB/KSP/OSP/BSP feed back internally; OB counts valid Store OB requests.");
+        $fdisplay(r_log, "CYCLE | PC | IF_VALID | IF_WORD | EXE_VALID:WORD | NL_VALID:WORD | PC_LOAD:TARGET | IB,KSP,OSP,BSP,OB_ADDR | OSP_WE:WRITE_ADDR | EOA0");
 
         repeat (3) @(negedge r_clk);
         load_imem();
@@ -216,8 +246,7 @@ module dsip_core_tb;
         load_ib();
         load_ksp();
 
-        // TODO: current-address stimulus/feedback will be specified separately.
-        // Do not connect an AGU output combinationally back to its input.
+        // Execution address state is maintained by the core's clocked counters.
         @(negedge r_clk);
         r_pc_en = 1'b1;
         r_trace_en = 1'b1;

@@ -13,13 +13,20 @@ import riscv_pkg::*;
  * @param led       4-bit LED Output
  * @param uart_tx   UART Transmit (Not currently implemented)
  */
-module dsip_master (
+module dsip_master #(
+    parameter IMEM_INIT_FILE = "led_blink.mem"
+)(
     input  logic        i_clk,
     input  logic        i_rst_n,
+    input  logic        i_slave_row_done,
     output logic [31:0] o_dma_csr_data,
     output logic [31:0] o_dma_csr_offset,
     output logic        o_wen_dma0,
-    output logic        o_wen_dma1
+    output logic        o_wen_dma1,
+
+    // SCR outputs: the full forwarded rs1 value is valid during the EX strobe.
+    output logic        o_slave_start,
+    output logic [31:0] o_slave_pc
 );
   
 
@@ -47,6 +54,7 @@ module dsip_master (
     PipelinedCPU cpu_inst (
         .clk(i_clk),
         .rst(w_rst),
+        .i_slave_row_done(i_slave_row_done),
         .imem_addr(imem_addr),
         .imem_data(imem_data),
         .imem_en(imem_en),
@@ -59,12 +67,14 @@ module dsip_master (
         .o_dma_csr_offset(o_dma_csr_offset),
         .o_dma_csr_data(o_dma_csr_data),
         .o_wen_dma0(o_wen_dma0),
-        .o_wen_dma1(o_wen_dma1)
+        .o_wen_dma1(o_wen_dma1),
+        .o_slave_start(o_slave_start),
+        .o_slave_pc(o_slave_pc)
     );
 
     // Instruction Memory
     InstructionMemory #(
-        .MEM_INIT_FILE("led_blink.mem")
+        .MEM_INIT_FILE(IMEM_INIT_FILE)
     ) imem (
         .clk(i_clk),
         .rst(w_rst),
@@ -85,11 +95,6 @@ module dsip_master (
         .ReadData(dmem_rdata),
         .leds_out(dmem_leds)
     );
-
-    // --- LED Output Mapping ---
-    // Display the lower 4 bits of the CPU's memory-mapped LED register.
-    // This allows visual verification of programs (like Fibonacci).
-    assign led = dmem_leds;
 
     // // --- ILA Debug ---
     // // ILA Probe Signals with mark_debug attribute

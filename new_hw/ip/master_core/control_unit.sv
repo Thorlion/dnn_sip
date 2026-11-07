@@ -25,6 +25,8 @@ import riscv_pkg::*;
  * @param jalr        Output: Enable jump-and-link register (JALR)
  * @param o_wen_dma0  Output: DMA0 CSR write enable (DMA_CONFIG funct3 = 0)
  * @param o_wen_dma1  Output: DMA1 CSR write enable (DMA_CONFIG funct3 = 1)
+ * @param o_slave_start Output: SCR request, forwarded to EX through ID/EX
+ * @param o_wait_row Output: WAIT_ROW request, held in ID until an event is available
  */
 module ControlUnit (
     input  opcode_t         opcode,
@@ -40,7 +42,9 @@ module ControlUnit (
     output logic            jump,
     output logic            jalr,
     output logic            o_wen_dma0,
-    output logic            o_wen_dma1
+    output logic            o_wen_dma1,
+    output logic            o_slave_start,
+    output logic            o_wait_row
 );
     always_comb begin : ControlLogic
         // --- Default signal values to prevent latches ---
@@ -55,6 +59,8 @@ module ControlUnit (
         jalr        = 1'b0;           
         o_wen_dma0  = 1'b0;
         o_wen_dma1  = 1'b0;
+        o_slave_start = 1'b0;
+        o_wait_row = 1'b0;
 
         case (opcode)
             OP_R_TYPE: begin : RegisterArithmetic
@@ -165,6 +171,16 @@ module ControlUnit (
                     o_wen_dma0 = 1'b1;
                 else if (funct3 == 3'b001)
                     o_wen_dma1 = 1'b1;
+            end
+
+            OP_SCR: begin
+                // Start the slave using forwarded rs1 as its instruction PC.
+                o_slave_start = 1'b1;
+            end
+
+            OP_WAIT_ROW: begin
+                // No register or memory side effects; operand fields are unused.
+                o_wait_row = 1'b1;
             end
             
             default: begin : UnknownOpcode

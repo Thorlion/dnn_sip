@@ -1,0 +1,90 @@
+// Channel-0 DMA0 load program. Instructions execute from byte PC 0.
+// All DMA addresses/counts use 16-bit words; DMA CSR offsets use bytes.
+// DMA_CONFIG: opcode 0x78, funct3=0, rd=0, data=forwarded rs1, offset=imm.
+// WAIT_ROW: 0x0000002B, consumes one live/pending slave ROW_DONE event.
+// Bank 0/1 means ping-pong buffer 0/1. KSP has 64 lanes per buffer.
+//
+// 1. Load 64 channel-0 kernels (121 words each) into KSP buffer 0.
+//    OIHW weight source for lane k: 0x35000 + k*363.
+//    KSP destination for lane k:   0x10000 + k*256.
+//    Wait for each DMA before writing the next configuration.
+// 2. NOP, then load the first 41 channel-0 rows y=0..40, alternating IB buffers.
+//    Row 1:   OM[0x10000..0x100DF] -> IB buffer 0[0..223]; NOP wait; SCR PC 0.
+//    Row 2:   OM[0x100E0..0x101BF] -> IB buffer 1[0..223]; DMA wait; WAIT_ROW 1.
+//    Row 3:   OM[0x101C0..0x1029F] -> IB buffer 0[0..223]; DMA wait; WAIT_ROW 2.
+//    ...
+//    Row 41:  OM[0x12300..0x123DF] -> IB buffer 0[0..223]; DMA wait; WAIT_ROW 40.
+// 3. WAIT_ROW 41, then park. Channels 1/2, bias loading and DMA1 are omitted.
+// SCR uses rs1=x0 (slave instruction PC 0), once after the first row's wait.
+// Row 1 skips WAIT_ROW so row 2 can be prefetched before row 1 completes.
+// Each later row waits for the previous row before the following buffer reuse.
+//
+// NOP delay loops include NOP + ADDI + BNE. Kernel loop: 42 iterations
+// (>=126 instruction cycles); row loop: 76 iterations (>=228 cycles).
+// Branch flushes add delay. These gaps cover payload + registered START latency.
+// NOPs cover DMA completion; WAIT_ROW handles slave consumption separately.
+// The slave must emit exactly one ROW_DONE per consumed input row, in order.
+// Missing events stall the master; multiple unconsumed events can coalesce.
+// The slave still needs its next row loaded before reading that buffer.
+// Expected transfers: 64*121 + 41*224 = 16928 words across 105 DMA0 starts.
+// Slave output tile: nine rows x 55 columns = 495 OSP words per lane.
+
+000352B7 // PC 0000: lui x5, 0x35       # OM first-channel weight source = 0x35000
+00010337 // PC 0004: lui x6, 0x10       # KSP buffer 0, lane 0, word 0 = 0x10000
+07900393 // PC 0008: addi x7, x0, 121   # 11*11 weights per lane
+00100413 // PC 000C: addi x8, x0, 1     # START command
+04000493 // PC 0010: addi x9, x0, 64    # 64 kernels / KSP lanes
+
+// kernel_loop:
+00028078 // PC 0014: DMA_CONFIG dma0, 0x00, x5  # source
+00430078 // PC 0018: DMA_CONFIG dma0, 0x04, x6  # destination
+00838078 // PC 001C: DMA_CONFIG dma0, 0x08, x7  # transfer size = 121 words
+00C40078 // PC 0020: DMA_CONFIG dma0, 0x0C, x8  # START
+02A00593 // PC 0024: addi x11, x0, 42   # NOP delay: >=126 instruction cycles
+
+// kernel_nop_wait:
+00000013 // PC 0028: nop
+FFF58593 // PC 002C: addi x11, x11, -1
+FE059CE3 // PC 0030: bne x11, x0, kernel_nop_wait
+16B28293 // PC 0034: addi x5, x5, 363   # next output kernel, skip its other 2 channels
+10030313 // PC 0038: addi x6, x6, 256   # next KSP lane (256-word stride)
+FFF48493 // PC 003C: addi x9, x9, -1
+FC049AE3 // PC 0040: bne x9, x0, kernel_loop
+
+// kernels_loaded:
+00000013 // PC 0044: nop
+000102B7 // PC 0048: lui x5, 0x10       # channel 0 image source = 0x10000
+00000313 // PC 004C: addi x6, x0, 0     # IB buffer 0, word 0
+0E000393 // PC 0050: addi x7, x0, 224   # 224 pixels per input row
+02900493 // PC 0054: addi x9, x0, 41    # input rows needed for nine complete output rows
+00048513 // PC 0058: addi x10, x9, 0    # remember initial row count for one-shot SCR
+
+// row_loop:
+00028078 // PC 005C: DMA_CONFIG dma0, 0x00, x5  # source = 0x10000 + 224*y
+00430078 // PC 0060: DMA_CONFIG dma0, 0x04, x6  # destination = 0x400*(y&1)
+00838078 // PC 0064: DMA_CONFIG dma0, 0x08, x7  # transfer size = 224 words
+00C40078 // PC 0068: DMA_CONFIG dma0, 0x0C, x8  # START
+04C00593 // PC 006C: addi x11, x0, 76   # DMA-only delay: >=228 instruction cycles
+
+// row_nop_wait:
+00000013 // PC 0070: nop
+FFF58593 // PC 0074: addi x11, x11, -1
+FE059CE3 // PC 0078: bne x11, x0, row_nop_wait
+00A49663 // PC 007C: bne x9, x10, wait_previous_row  # rows 2..41 skip SCR
+0000000B // PC 0080: SCR x0          # start slave at instruction PC 0, once
+0080006F // PC 0084: jal x0, advance_row  # prefetch row 2 without waiting for row 1
+
+// wait_previous_row:
+0000002B // PC 0088: WAIT_ROW        # loaded row n; consume row n-1 completion
+
+// advance_row:
+0E028293 // PC 008C: addi x5, x5, 224   # next input row
+40034313 // PC 0090: xori x6, x6, 1024  # toggle IB buffer 0 <-> 1
+FFF48493 // PC 0094: addi x9, x9, -1
+FC0492E3 // PC 0098: bne x9, x0, row_loop
+0000002B // PC 009C: WAIT_ROW        # row 41 is loaded; wait for its consumption
+
+// park:
+0000006F // PC 00A0: jal x0, park       # all 41 row events have been consumed
+00000013 // PC 00A4: nop
+00000013 // PC 00A8: nop

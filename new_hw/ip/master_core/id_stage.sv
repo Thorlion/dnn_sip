@@ -37,6 +37,8 @@ import riscv_pkg::*;
  * @param jalr            Control: Jump Register Enable (JALR)
  * @param o_wen_dma0      Control: DMA0 CSR Write Enable
  * @param o_wen_dma1      Control: DMA1 CSR Write Enable
+ * @param o_slave_start   Control: SCR slave-start request
+ * @param o_wait_row      Control: wait for one slave row-completion event
  */
 module ID_Stage (
     input  logic             clk,
@@ -65,16 +67,22 @@ module ID_Stage (
     output logic             jump,
     output logic             jalr,
     output logic             o_wen_dma0,
-    output logic             o_wen_dma1
+    output logic             o_wen_dma1,
+    output logic             o_slave_start,
+    output logic             o_wait_row
 );
     // --- Instruction Field Decoding ---
     assign opcode = opcode_t'(instruction[6:0]);
-    // DMA_CONFIG has no destination and consumes only rs1. Its immediate bits
-    // must not create an rs2 dependency in the hazard or forwarding units.
-    assign rd     = (opcode == OP_DMA_CONFIG) ? 5'd0 : instruction[11:7];
+    // DMA_CONFIG and SCR consume only rs1; WAIT_ROW consumes no registers.
+    // Unused fields must not create false register dependencies.
+    assign rd     = ((opcode == OP_DMA_CONFIG) || (opcode == OP_SCR) ||
+                     (opcode == OP_WAIT_ROW)) ?
+                    5'd0 : instruction[11:7];
     assign funct3 = instruction[14:12];
-    assign rs1    = instruction[19:15];
-    assign rs2    = (opcode == OP_DMA_CONFIG) ? 5'd0 : instruction[24:20];
+    assign rs1    = (opcode == OP_WAIT_ROW) ? 5'd0 : instruction[19:15];
+    assign rs2    = ((opcode == OP_DMA_CONFIG) || (opcode == OP_SCR) ||
+                     (opcode == OP_WAIT_ROW)) ?
+                    5'd0 : instruction[24:20];
     assign funct7 = instruction[31:25];
 
     ControlUnit control_unit_inst (
@@ -91,7 +99,9 @@ module ID_Stage (
         .jump(jump),
         .jalr(jalr),
         .o_wen_dma0(o_wen_dma0),
-        .o_wen_dma1(o_wen_dma1)
+        .o_wen_dma1(o_wen_dma1),
+        .o_slave_start(o_slave_start),
+        .o_wait_row(o_wait_row)
     );
 
     RegFile reg_file_inst (

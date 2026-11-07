@@ -1,5 +1,0 @@
-// One 58-bit binary instruction per line, MSB [57] to LSB [0].
-// First word is loaded at IMEM address 0; following words use consecutive addresses.
-// See ../INSTRUCTION_FORMAT.md for field positions. Unspecified locations are zero-filled by the testbench.
-// Placeholder: no loads or stores; selects the zero-result MAC operation.
-0000000000000000000000000000000000000000000000000000000000

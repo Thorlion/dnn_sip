@@ -21,12 +21,12 @@ module dma_write_top #(
     // OM Interface read
     input  logic [DATA_WIDTH-1:0] i_om_data,
     output logic [31:0] o_om_addr,
-    output logic i_om_ren,
+    output logic o_om_ren,
 
     // IB, KSP, BSP, Slave IMEM write interface
     output logic [DATA_WIDTH-1:0] o_slave_data,
     output logic [31:0] o_slave_addr,
-    output logic i_slave_wen
+    output logic o_slave_wen
    
 );
 
@@ -101,8 +101,8 @@ module dma_write_top #(
     end     
 
     always_comb begin
-        i_slave_wen = (r_current_state == TRANSFER);
-        i_om_ren = (r_current_state == TRANSFER);
+        o_slave_wen = (r_current_state == TRANSFER);
+        o_om_ren = (r_current_state == TRANSFER);
     end 
 
     assign o_slave_data = i_om_data;

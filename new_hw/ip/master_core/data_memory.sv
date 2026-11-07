@@ -146,7 +146,7 @@ module DataMemory (
         if (mem_wren[3]) ram_memory[mem_word_addr][31:24] <= WriteData[31:24];
 
         // --- Read Port ---
-        if (mem_word_addr < RAM_MEMORY_SIZE) begin : ReadOperation
+        if (int'(mem_word_addr) < RAM_MEMORY_SIZE) begin : ReadOperation
             mem_rdata_word <= ram_memory[mem_word_addr];
         end else begin : OutOfBoundsRead
             mem_rdata_word <= {XLEN{1'b0}};
