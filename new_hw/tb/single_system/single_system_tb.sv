@@ -4,7 +4,10 @@
 // through the existing MASTER_IMEM_FILE and SLAVE_IMEM_FILE parameters.
 // OM is asynchronous-read and clocked-write; all DUT memories remain inside
 // single_system_top. This bench generates no instructions or DMA commands.
-module single_system_tb;
+module single_system_tb #(
+    parameter MASTER_IMEM_FILE = "single_master_imem.mem",
+    parameter SLAVE_IMEM_FILE = "single_slave_imem.mem"
+);
     localparam int unsigned PC_W = 9;
     localparam int unsigned OM_DEPTH = 262144; // 256K x 16 bits = 512 KiB
     localparam int unsigned MAX_CYCLES = 100000;
@@ -43,8 +46,8 @@ module single_system_tb;
 
     single_system_top #(
         .PC_W(PC_W),
-        .MASTER_IMEM_FILE("single_master_imem.mem"),
-        .SLAVE_IMEM_FILE("single_slave_imem.mem")
+        .MASTER_IMEM_FILE(MASTER_IMEM_FILE),
+        .SLAVE_IMEM_FILE(SLAVE_IMEM_FILE)
     ) dut (
         .i_clk(r_clk),
         .i_rst_n(r_rst_n),

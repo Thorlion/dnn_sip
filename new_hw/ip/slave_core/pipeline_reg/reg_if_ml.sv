@@ -1,5 +1,5 @@
 // IF to memory-load control pipeline register.
-// The low nine-bit payload includes EXE controls, OSP select copies and stores.
+// The control payload carries the zero-extended arithmetic and store fields.
 // The instruction's OSP address advances alongside that payload for stores.
 // OSP mux selection advances to ML; OB write-buffer selection follows stores.
 // Validity is separate from the instruction encoding. Invalid inputs insert

@@ -39,6 +39,12 @@ class TestSpec:
     result_label: str = "PASS"
 
 
+SINGLE_SYSTEM_OM_ASSETS = (
+    "tb/single_system/om_mem/input_img.mem",
+    "tb/single_system/om_mem/Conv1/conv1_weight.mem",
+    "tb/single_system/om_mem/Conv1/conv1_bias.mem",
+)
+
 TESTS = {
     "master_dma": TestSpec(
         top="master_dma_tb",
@@ -118,10 +124,7 @@ TESTS = {
         assets=(
             "tb/single_system/master_mem/single_master_imem.mem",
             "tb/single_system/slave_mem/single_slave_imem.mem",
-            "tb/single_system/om_mem/input_img.mem",
-            "tb/single_system/om_mem/Conv1/conv1_weight.mem",
-            "tb/single_system/om_mem/Conv1/conv1_bias.mem",
-        ),
+        ) + SINGLE_SYSTEM_OM_ASSETS,
         result_log="single_system_result.log",
         pass_marker="SINGLE_SYSTEM_TB_FINISHED",
         waveform="single_system.vcd",
@@ -132,9 +135,31 @@ TESTS = {
 TESTS["conv1_channel0"] = TestSpec(
     top="conv1_channel0_tb",
     sources=TESTS["single_system"].sources + ("tb/single_system/conv1_channel0_tb.sv",),
-    assets=TESTS["single_system"].assets + ("tb/single_system/reference/conv1_channel0_osp.mem",),
+    assets=(
+        "tb/single_system/master_mem/conv1_channel0_master_imem.mem",
+        "tb/single_system/slave_mem/conv1_channel0_slave_imem.mem",
+        "tb/single_system/reference/conv1_channel0_osp.mem",
+    ) + SINGLE_SYSTEM_OM_ASSETS,
     result_log="single_system_result.log",
     pass_marker="CONV1_CHANNEL0_TB_PASS",
+    waveform="single_system.vcd",
+)
+
+TESTS["agu_loop"] = TestSpec(
+    top="agu_loop_tb",
+    sources=("ip/slave_core/dec_if.sv", "ip/slave_core/agu.sv", "tb/ip/agu_loop_tb.sv"),
+    assets=(),
+    result_log="agu_loop_result.log",
+    pass_marker="AGU_LOOP_TB_PASS",
+    waveform="agu_loop.vcd",
+)
+
+TESTS["conv1_rgb21"] = TestSpec(
+    top="conv1_rgb21_tb",
+    sources=TESTS["single_system"].sources + ("tb/single_system/conv1_rgb21_tb.sv",),
+    assets=TESTS["single_system"].assets + ("tb/single_system/reference/conv1_rgb21_osp.mem",),
+    result_log="single_system_result.log",
+    pass_marker="CONV1_RGB21_TB_PASS",
     waveform="single_system.vcd",
 )
 

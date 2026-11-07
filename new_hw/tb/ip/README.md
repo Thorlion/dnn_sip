@@ -25,12 +25,11 @@ operand/EOA lane enable ports are tied high. Memory accesses still depend on
 the decoded instruction fields. Reads from unwritten data memories can yield X.
 
 IB has two 1024-word buffers and KSP has two sets of 64 256-word banks. Each
-instruction selects its IB read buffer with bit 51 and its KSP read buffer
-with bit 39; the supplied zero instruction selects buffer 0 for both. Bit 63
-selects the OB write buffer, and `{instruction[62:59], instruction[4:3]}` selects
+instruction switches its IB read buffer with bit 49 and its KSP read buffer
+with bit 35. The supplied zero instruction holds buffer 0 for both. Bit 63
+switches the OB write buffer, and `instruction[62:57]` selects
 the single OSP word for MLOM; the zero instruction selects OB buffer/OSP bank 0.
-Former MAX1/MAX2 bits [4:3] now belong to this OSP mux selection. The
-scaffold holds both write-buffer selectors at zero, with dedicated IB/KSP/BSP
+The scaffold holds both write-buffer selectors at zero, with dedicated IB/KSP/BSP
 write addresses initialized to zero. Execution pointers retain their values
 across start pulses and buffer changes. Buffer-loading stimulus is still
 left for the user's loading schedule.
@@ -60,3 +59,7 @@ PC, IF/EXE/NL controls, branch target, AGU addresses, the current OB address,
 OSP write mask/address and EOA lane 0. The completion marker
 means only that the testbench reached its time limit; no arithmetic comparison
 or convolution correctness check is performed by this scaffold.
+
+`python new_hw/script/run.py test=agu_loop` from `source` checks the packed
+loop selectors and all seven AGU contexts, including simultaneous SET and
+LOOP, same-context update priority and issue gating.

@@ -42,7 +42,7 @@ class CompileError(ValueError):
 @dataclass(frozen=True)
 class Field:
     name: str
-    bit: int | None
+    bit: int
     width: int
     sign_bit: int | None = None
 
@@ -56,32 +56,32 @@ class Field:
 
 
 # Current RTL: new_hw/INSTRUCTION_FORMAT.md and ip/slave_core/dec_if.sv.
-# bit is the least-significant magnitude/data bit. OSP mux is split and is
-# encoded explicitly below. Delta width excludes its separate sign bit.
+# bit is the least-significant magnitude/data bit.
+# Delta width excludes its separate sign bit.
 FIELDS = (
     Field("OB switch", 63, 1),
-    Field("OSP mux", None, 6),
-    Field("Set iteration", 53, 6),
-    Field("Set breakpoint", 44, 2),
-    Field("Conditional loop", 42, 2),
-    Field("Done", 52, 1),
-    Field("Row done", 41, 1),
-    Field("IB switch", 51, 1),
-    Field("IB clear", 50, 1),
-    Field("IB delta", 46, 3, sign_bit=49),
-    Field("KSP switch", 39, 1),
-    Field("KSP delta", 31, 7, sign_bit=38),
-    Field("OSP clear", 30, 1),
-    Field("OSP delta", 20, 9, sign_bit=29),
-    Field("BSP clear", 19, 1),
-    Field("BSP delta", 15, 3, sign_bit=18),
-    Field("Load IB", 12, 1),
-    Field("Load KSP", 11, 1),
-    Field("Load OSP", 10, 1),
-    Field("Load BSP", 9, 1),
-    Field("MULT1", 8, 1),
-    Field("MULT2", 7, 1),
-    Field("ACC", 5, 2),
+    Field("OSP mux", 57, 6),
+    Field("Set iteration", 51, 6),
+    Field("Set breakpoint", 41, 3),
+    Field("Conditional loop", 38, 3),
+    Field("Done", 50, 1),
+    Field("Row done", 37, 1),
+    Field("IB switch", 49, 1),
+    Field("IB clear", 48, 1),
+    Field("IB delta", 44, 3, sign_bit=47),
+    Field("KSP switch", 35, 1),
+    Field("KSP delta", 27, 7, sign_bit=34),
+    Field("OSP clear", 26, 1),
+    Field("OSP delta", 16, 9, sign_bit=25),
+    Field("BSP clear", 15, 1),
+    Field("BSP delta", 11, 3, sign_bit=14),
+    Field("Load IB", 10, 1),
+    Field("Load KSP", 9, 1),
+    Field("Load OSP", 8, 1),
+    Field("Load BSP", 7, 1),
+    Field("MULT1", 6, 1),
+    Field("MULT2", 5, 1),
+    Field("ACC", 3, 2),
     Field("MAX/MAC", 2, 1),
     Field("Store OSP", 1, 1),
     Field("Store OB", 0, 1),
@@ -214,10 +214,7 @@ def encode_instruction(values: dict[str, int]) -> int:
     word = 0
     for field in FIELDS:
         value = values[field.name]
-        if field.name == "OSP mux":
-            word |= (value >> 2) << 59
-            word |= (value & 0b11) << 3
-        elif field.sign_bit is not None:
+        if field.sign_bit is not None:
             word |= int(value < 0) << field.sign_bit
             word |= abs(value) << field.bit
         else:

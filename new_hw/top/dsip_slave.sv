@@ -159,8 +159,8 @@ module dsip_slave #(
     logic [2:0] r_row_done_pipe;
 
     logic [5:0] w_set_iteration;
-    logic [1:0] w_set_breakpoint;
-    logic [1:0] w_conditional_loop;
+    logic [2:0] w_set_breakpoint;
+    logic [2:0] w_conditional_loop;
     logic w_ib_rbuf_sel;
     logic w_ib_switch;
     logic r_ib_active_buf;
@@ -258,8 +258,8 @@ module dsip_slave #(
     );
 
     // Decode hold/switch commands separately from resolved physical buffer IDs.
-    // IF also decodes output-path selections. The low nine bits continue
-    // through IF -> ML -> EXE; [4:3] are OSP selection bits, not EXE controls.
+    // IF also decodes output-path selections. The low seven bits continue
+    // through IF -> ML -> EXE in the zero-extended control payload.
     dec_if u_dec_if (
         .i_instruction(w_decode_instruction),
         .o_ob_switch(w_ob_switch),
@@ -498,7 +498,7 @@ module dsip_slave #(
         .i_clk(i_clk),
         .i_rst_n(i_rst_n),
         .i_valid(w_issue),
-        .i_instruction(w_instruction[8:0]),
+        .i_instruction({2'b00, w_instruction[6:0]}),
         .i_osp_addr(o_osp_addr),
         .i_osp_mux_sel(w_osp_mux_sel),
         .i_ob_wbuf_sel(w_ob_wbuf_sel),
@@ -546,8 +546,7 @@ module dsip_slave #(
         .o_mlb_out(w_mlb_out)
     );
 
-    // EXE decoder broadcasts the MAC controls to all lanes. MAX mode remains
-    // unimplemented; former MAX1/MAX2 bits now select the OSP output mux.
+    // EXE decoder broadcasts the MAC controls to all lanes.
     dec_ex u_dec_ex (
         .i_valid(o_exe_valid),
         .i_instruction(o_exe_instruction),

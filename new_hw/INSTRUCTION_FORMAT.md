@@ -10,35 +10,33 @@ magnitude and sign 1 subtracts it.
 | Field | Bits |
 | --- | --- |
 | OB write-buffer switch | 63 |
-| OSP mux selection [5:2] | 62:59 |
-| Set iteration | 58:53 |
-| DONE | 52 |
-| IB read-buffer switch | 51 |
-| IB counter clear | 50 |
-| IB sign | 49 |
-| IB offset magnitude | 48:46 |
-| Set breakpoint selector | 45:44 |
-| Conditional loop selector | 43:42 |
-| ROW_DONE | 41 |
-| Reserved, encode zero | 40 |
-| KSP read-buffer switch | 39 |
-| KSP sign | 38 |
-| KSP offset magnitude | 37:31 |
-| OSP counter clear | 30 |
-| OSP sign | 29 |
-| OSP offset magnitude | 28:20 |
-| BSP counter clear | 19 |
-| BSP sign | 18 |
-| BSP offset magnitude | 17:15 |
-| Reserved, encode zero | 14:13 |
-| Load IB | 12 |
-| Load KSP | 11 |
-| Load OSP | 10 |
-| Load BSP | 9 |
-| MULT1 | 8 |
-| MULT2 | 7 |
-| ACC | 6:5 |
-| OSP mux selection [1:0] (formerly MAX1/MAX2) | 4:3 |
+| OSP mux selection | 62:57 |
+| Set iteration | 56:51 |
+| DONE | 50 |
+| IB read-buffer switch | 49 |
+| IB counter clear | 48 |
+| IB sign | 47 |
+| IB offset magnitude | 46:44 |
+| Set breakpoint selector | 43:41 |
+| Conditional loop selector | 40:38 |
+| ROW_DONE | 37 |
+| Reserved, encode zero | 36 |
+| KSP read-buffer switch | 35 |
+| KSP sign | 34 |
+| KSP offset magnitude | 33:27 |
+| OSP counter clear | 26 |
+| OSP sign | 25 |
+| OSP offset magnitude | 24:16 |
+| BSP counter clear | 15 |
+| BSP sign | 14 |
+| BSP offset magnitude | 13:11 |
+| Load IB | 10 |
+| Load KSP | 9 |
+| Load OSP | 8 |
+| Load BSP | 7 |
+| MULT1 | 6 |
+| MULT2 | 5 |
+| ACC | 4:3 |
 | MAX or MAC | 2 |
 | Store OSP | 1 |
 | Store OB | 0 |
@@ -46,12 +44,11 @@ magnitude and sign 1 subtracts it.
 Signed deltas are IB `-7..7`, KSP `-127..127`, OSP `-511..511` and BSP `-7..7`.
 These smaller magnitudes do not reduce physical address widths or memory
 depths: the counters remain IB 10, KSP 8, OSP 9 and BSP 6 bits. Arithmetic
-wraps at each counter's width. Bit 63 switches the OB write buffer. The OSP
-mux selection is `{instruction[62:59], instruction[4:3]}`, selecting lane
-0 through 63. Former MAX1/MAX2 fields remain repurposed; MAX/MAC bit 2 is
-unchanged. Three reserved bits must be zero: `[40]` and `[14:13]`.
-Older KSP images require re-encoding: sign is now bit 38, magnitude is
-`[37:31]`, and KSP clear has been removed. OSP clear remains at bit 30.
+wraps at each counter's width. The contiguous six-bit OSP mux field selects
+lane 0 through 63. Encode reserved bit 36 as zero.
+Re-export earlier slave instruction images from their worksheets for this
+layout. Worksheet control values use the same meanings and the two loop
+selectors now accept 0 through 7.
 
 ## Buffer hold/switch commands
 
@@ -93,10 +90,10 @@ KSP always feeds back its calculated address on issue. It resets to zero
 only on reset; use signed relative offsets to reposition it during execution.
 Changing IB/KSP buffers or issuing SCR does not reset any address counter.
 
-There are three independent breakpoint registers and three independent
-6-bit iteration counters. SBP=0 stores nothing; SBP=1, 2 or 3 stores PC+1
+There are seven independent breakpoint registers and seven independent
+6-bit iteration counters. SBP=0 stores nothing. SBP=1 through 7 stores PC+1
 and loads Set iteration into that context. Zero is a valid loaded count.
-Set iteration is ignored when SBP=0. CLP=0 performs no branch; CLP=1, 2 or 3
+Set iteration is ignored when SBP=0. CLP=0 performs no branch. CLP=1 through 7
 branches to that context's saved target if its old count is nonzero, then
 decrements that count. A count N permits N backward jumps, so a loop body
 reached once before CLP executes N+1 times (52 gives 53 executions).
@@ -120,7 +117,7 @@ separate synchronization mechanism described below.
 
 ## ROW_DONE and master WAIT_ROW
 
-Slave bit 41 is ROW_DONE. Set it on the last instruction of a row's work,
+Slave bit 37 is ROW_DONE. Set it on the last instruction of a row's work,
 including a final store if needed. An instruction issued at edge N produces
 `dsip_slave.o_row_done` after its final store is accepted at edge N+3. The
 output is a one-cycle event per marked instruction. Consecutive marked
@@ -151,14 +148,12 @@ event is consumed as another arrives, the new event remains pending.
 Use WAIT_ROW before DMA overwrites a buffer whose completed row was marked
 by the slave. This handshake does not pause the slave for incoming DMA data
 or prove that the next row is loaded. Programs must still ensure DMA has
-finished before the slave reads that row. Existing instruction images are
-unchanged; add ROW_DONE markers and WAIT_ROW at the intended boundaries.
+finished before the slave reads that row.
 
 `dec_if` consumes flow control, address control, memory load and output-path
-selections. The low nine bits remain a payload forwarded through `reg_if_ml`
-and then `reg_ml_exe`, with a separate valid flag. Arithmetic controls occupy
-[8:5] and [2], stores occupy [1:0], and copies of the OSP mux low bits [4:3]
-are ignored by the EXE decoder.
+selections. The low seven bits are zero-extended and forwarded through
+`reg_if_ml` and `reg_ml_exe` with a separate valid flag. Arithmetic controls
+occupy [6:2] and stores occupy [1:0].
 At the EXE input, they are exposed as `o_exe_instruction[8:0]` and `o_exe_valid`.
 `dec_ex` decodes the arithmetic fields at the EXE input. Store fields advance
 through `reg_exe_nl` to `dec_ms`, which requests OSP writes from NL.
@@ -198,8 +193,7 @@ Word address bits `[1:0]` select the bank; the remaining bits select the
 instruction row. A write enables only its selected bank, while all bank read
 outputs hold. During fetch, all four banks read the same instruction row on
 one rising edge. The core uses the full record `[63:0]`, including the upper
-output-path selection fields; encode reserved bits `[40]` and `[14:13]`
-as zero.
+output-path selection fields. Encode reserved bit `[36]` as zero.
 The IMEM wrapper has separate address inputs: `i_raddr[ADDR_W-1:0]` is an
 instruction index, while `i_waddr[ADDR_W+1:0]` is a 16-bit-word address.
 Read address `n` returns instruction `n`, so read addresses `0` and `1`
@@ -245,9 +239,10 @@ Instructions already in ML/EXE can continue advancing while programming pauses I
 
 ## Remaining instruction forwarding
 
-If IF issues instruction I on edge N, `reg_if_ml` captures I's bits [8:0]
+If IF issues instruction I on edge N, `reg_if_ml` captures I's zero-extended
+bits [6:0]
 and the OSP address generated by the AGU for I. The data-memory reads for I
-complete after that edge. On edge N+1, `reg_ml_exe` forwards the same nine bits
+complete after that edge. On edge N+1, `reg_ml_exe` forwards the payload
 and OSP address to EXE while MLI/MLK/MLO capture I's memory data.
 
 Both control boundaries reuse the common `register` module and reset to zero
@@ -276,12 +271,12 @@ no activation function or lookup is implemented yet.
 
 ## EXE decoding
 
-`dec_ex` splits MULT1 [8], MULT2 [7] and ACC [6:5] and broadcasts those controls
+`dec_ex` splits MULT1 [6], MULT2 [5] and ACC [4:3] and broadcasts those controls
 to all 64 DALUs. ACC encoding 11 is reserved in the instruction format; the
 decoder passes the field through without changing the existing DALU mux logic.
 
 MAX/MAC [2] is also split out, but its decoder output is left unconnected in
-the core. Bits [4:3] select the low two OSP mux bits and are not EXE controls.
+the core.
 The MAC commit enable is valid=1
 and MAX/MAC=0. The EOA lane mask is temporarily all ones, so every lane's
 capture enable equals that MAC commit enable. Bubbles and MAX-selected instructions hold

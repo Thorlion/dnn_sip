@@ -13,9 +13,9 @@
 // OB has a 10-bit sequential store pointer, advanced only by i_store_ob.
 // All pointers reset to zero and retain their values across start/buffer changes.
 // Kernel-loop wrap is external. The program counter also remains external.
-// SBP selects context 1..3 and saves PC+1 plus the 6-bit iteration count.
+// SBP selects context 1..7 and saves PC+1 plus the 6-bit iteration count.
 // SBP=0 stores nothing. A count of zero is explicitly loadable with SBP.
-// CLP selects context 1..3; zero selects no branch. Contexts are independent.
+// CLP selects context 1..7. Zero selects no branch. Contexts are independent.
 // A branch uses the pre-edge target/count. If SBP and CLP select the same
 // context, loading its new target/count takes priority over decrementing it.
 // Count N permits N taken loop-back jumps; zero disables a loop-back jump.
@@ -28,8 +28,8 @@ module agu # (
     input logic i_addr_en,
     input logic i_store_ob,
     input logic [5:0] i_set_iteration,
-    input logic [1:0] i_set_breakpoint,
-    input logic [1:0] i_conditional_loop,
+    input logic [2:0] i_set_breakpoint,
+    input logic [2:0] i_conditional_loop,
     input logic [PC_W-1:0] i_pc,
 
     input logic       i_ib_clear,
@@ -52,8 +52,9 @@ module agu # (
     output logic o_pc_load,
     output logic [PC_W-1:0] o_pc_target
 );
-    logic [5:0] r_iteration_count [1:3];
-    logic [PC_W-1:0] r_breakpoint [1:3];
+    localparam int unsigned LOOP_CONTEXTS = 7;
+    logic [5:0] r_iteration_count [1:LOOP_CONTEXTS];
+    logic [PC_W-1:0] r_breakpoint [1:LOOP_CONTEXTS];
     logic [9:0] r_ib_addr;
     logic [7:0] r_ksp_addr;
     logic [8:0] r_osp_addr;
@@ -86,28 +87,24 @@ module agu # (
     always_comb begin
         o_pc_load = 1'b0;
         o_pc_target = '0;
-        case (i_conditional_loop)
-            2'd1, 2'd2, 2'd3: begin
-                o_pc_load = i_addr_en && (r_iteration_count[i_conditional_loop] != 6'd0);
-                o_pc_target = r_breakpoint[i_conditional_loop];
-            end
-            default: begin
-            end
-        endcase
+        if (i_conditional_loop != 3'd0) begin
+            o_pc_load = i_addr_en && (r_iteration_count[i_conditional_loop] != 6'd0);
+            o_pc_target = r_breakpoint[i_conditional_loop];
+        end
     end
 
     always_ff @(posedge i_clk or negedge i_rst_n) begin
         if (!i_rst_n) begin
-            for (int w_loop = 1; w_loop <= 3; w_loop++) begin
+            for (int w_loop = 1; w_loop <= LOOP_CONTEXTS; w_loop++) begin
                 r_iteration_count[w_loop] <= 6'd0;
                 r_breakpoint[w_loop] <= '0;
             end
         end else if (i_addr_en) begin
-            for (int w_loop = 1; w_loop <= 3; w_loop++) begin
-                if (i_set_breakpoint == 2'(w_loop)) begin
+            for (int w_loop = 1; w_loop <= LOOP_CONTEXTS; w_loop++) begin
+                if (i_set_breakpoint == 3'(w_loop)) begin
                     r_iteration_count[w_loop] <= i_set_iteration;
                     r_breakpoint[w_loop] <= i_pc + 1'b1;
-                end else if (o_pc_load && (i_conditional_loop == 2'(w_loop))) begin
+                end else if (o_pc_load && (i_conditional_loop == 3'(w_loop))) begin
                     r_iteration_count[w_loop] <= r_iteration_count[w_loop] - 6'd1;
                 end
             end

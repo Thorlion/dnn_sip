@@ -43,28 +43,18 @@ existing memory wrappers. Slave records use instruction indices, with one
 slave program through OM/DMA or overwrite its preload. Your master program
 can still program slave IMEM through DMA0 when explicitly instructed.
 
-The current master image loads channel 0: 64 kernels into KSP buffer 0,
-then the first 41 input rows (224 pixels each) into alternating IB buffers 0/1,
-with NOP delay loops covering DMA completion. After the first row's wait it
-issues SCR once with rs1=x0, starting the file-preloaded slave at instruction
-PC 0. It prefetches row 2, then uses WAIT_ROW after each later load to consume
-the preceding row's completion before another transfer can reuse its buffer.
-After the row-41 completion event it parks. See
-[`master_mem/README.md`](master_mem/README.md) for the instruction outline
-and source/destination formulas.
-The slave image supplies the instructions executed after SCR. It must emit
-one ROW_DONE event per consumed input row for the master schedule above.
-DONE separately holds the PC and stops new issue, then raises sticky
-`o_slave_done` after the final store drains. Reset or another SCR clears
-completion. File preloading does not initialize unused slots; provide valid
-instructions for every address the slave can execute.
+The default programs process input rows 1..21 for each of the three RGB
+channels. Each of the 64 lanes completes four output rows at OSP addresses
+0..219. DMA0 alternates the IB buffers and prefetches the next channel's
+weights in the inactive KSP buffer while the current channel runs.
+The master issues one SCR per channel. The slave uses entry PC 0 to start
+the channel-0 sums and entry PC 216 to accumulate channels 1 and 2.
+The master parks after consuming the last channel's final ROW_DONE event.
+See the [master schedule](master_mem/README.md) and
+[slave schedule](slave_mem/README.md).
 
-The current slave program is the 279-word export of
-`new_sw/core_instruction/single_temp.xlsx` (`Sheet1`). It processes one input
-row per transaction and completes nine output rows in OSP addresses 0..494
-of each lane, leaving 17 words unused. The last instruction sets ROW_DONE
-and DONE. See [`slave_mem/README.md`](slave_mem/README.md) for its nested-loop
-schedule and the channel-0 reference test.
+The earlier 41-row channel-0 workload is available through
+`test=conv1_channel0`. Its slave image still comes from `single_temp.xlsx`.
 
 ## OM memory map
 
@@ -120,7 +110,7 @@ there is no master-readable DMA/slave status, automatic buffer swap, or
 address-counter reset on SCR. Instruction DONE is exposed
 through the top's `o_slave_done` output for external observation.
 
-Slave instruction bit 41 (`Row done` in the workbook) produces a one-cycle
+Slave instruction bit 37 (`Row done` in the workbook) produces a one-cycle
 `o_slave_row_done` event after its instruction's final store drains. The top
 connects it to the master. `WAIT_ROW` (`.word 0x0000002b`, custom-1) stalls
 master fetch/decode until it consumes one live or remembered row event.
@@ -128,9 +118,10 @@ Older master instructions finish during the wait. Reset or SCR clears the
 one pending event. Multiple unconsumed events coalesce. The DMA-only harness
 ties this input low because it has no slave.
 
-The master image now executes WAIT_ROW before buffer reuse, plus a final
-wait for row 41. The slave image supplies one matching row marker after
-all vertical passes of each input row.
+The master executes WAIT_ROW before buffer reuse and after the final row
+of each channel. The slave emits one matching marker after all vertical
+passes of each input row. DONE signals that the current channel has drained.
+The next SCR clears DONE and starts the next channel.
 ROW_DONE does not stop the slave or wait for incoming DMA data; the program
 must also ensure a new row is ready before the slave starts reading it.
 
@@ -140,17 +131,30 @@ window ended without a fatal error; it does not assert program completion or
 workload correctness. Add workload-specific comparisons once your programs
 and expected results are available.
 
-For the current nine-output-row channel-0 workload, use its self-checking
-wrapper instead of interpreting FINISHED as a correctness result:
+From `source`, regenerate and check the RGB program:
+
+```powershell
+python new_sw/core_instruction/conv1_rgb21_program.py
+python new_sw/core_instruction/conv1_channel0_reference.py --channels 3 --output-rows 4 --output new_hw/tb/single_system/reference/conv1_rgb21_osp.mem
+python new_hw/script/run.py test=conv1_rgb21
+```
+
+The RGB checker verifies all 14080 OSP words, 63 row events and waits,
+255 DMA completions, and that each next-channel weight set is ready at SCR.
+The Verilator run passed at a final slave DONE time of 853.305 us.
+Logs are in `DSIP/tmp/verilator/conv1_rgb21/`.
+
+To check the earlier nine-output-row channel-0 workload:
 
 ```powershell
 python new_sw/core_instruction/conv1_channel0_reference.py
 python new_hw/script/run.py test=conv1_channel0
 ```
 
-This test passed with all 31680 OSP words matching, 41 row events/waits and
-105 DMA completions. Regenerate the reference whenever the image or weights
-change. Logs are in `DSIP/tmp/verilator/conv1_channel0/`.
+The test checks all 31680 OSP words, 7744 prefetched KSP weights,
+41 row events and waits, and 169 DMA completions. Regenerate the OSP reference
+whenever the image or weights change. Logs are in
+`DSIP/tmp/verilator/conv1_channel0/`.
 
 From `source`, once compilation/simulation is approved:
 
@@ -175,6 +179,5 @@ preloading and partial 16-bit programming writes. Those runs predate this
 cleanup and do not verify the current file-driven harness.
 
 The OM parameter conversion was previously checked bit-for-bit against its
-source binaries. The file-driven harness and current channel-0 master program
-have not been compiled or simulated; repository instructions require explicit
-approval first.
+source binaries. Both file-driven CONV1 regressions passed after the RGB
+program was installed.

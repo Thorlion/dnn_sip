@@ -100,43 +100,43 @@ class ExporterTests(unittest.TestCase):
     def test_current_mac_instruction(self):
         values = self.active(7, **{"IB switch": 1, "KSP switch": 1, "Load IB": 1,
                                   "Load KSP": 1, "MULT1": 1, "MULT2": 1, "Store OSP": 1})
-        self.assertEqual(self.compile_rows([values]), {7: 0x0008_0080_0000_1982})
+        self.assertEqual(self.compile_rows([values]), {7: 0x0002_0008_0000_0662})
 
     def test_current_output_instruction(self):
         values = self.active(11, **{"OB switch": 1, "OSP mux": 37, "BSP delta": 5,
                                    "Load OSP": 1, "Load BSP": 1, "Store OB": 1})
-        self.assertEqual(self.compile_rows([values]), {11: 0xC800_0000_0002_8609})
+        self.assertEqual(self.compile_rows([values]), {11: 0xCA00_0000_0000_2981})
 
     def test_control_bits_against_literal_words(self):
         vectors = {
             "OB switch": 0x8000_0000_0000_0000,
-            "Set iteration": 0x0020_0000_0000_0000,
-            "Set breakpoint": 0x0000_1000_0000_0000,
-            "Conditional loop": 0x0000_0400_0000_0000,
-            "Done": 0x0010_0000_0000_0000,
-            "Row done": 0x0000_0200_0000_0000,
-            "IB switch": 0x0008_0000_0000_0000,
-            "IB clear": 0x0004_0000_0000_0000,
-            "KSP switch": 0x0000_0080_0000_0000,
-            "OSP clear": 0x0000_0000_4000_0000,
-            "BSP clear": 0x0000_0000_0008_0000,
-            "Load IB": 0x1000, "Load KSP": 0x0800, "Load OSP": 0x0400,
-            "Load BSP": 0x0200, "MULT1": 0x0100, "MULT2": 0x0080,
-            "ACC": 0x0020, "Store OSP": 0x0002, "Store OB": 0x0001,
+            "Set iteration": 0x0008_0000_0000_0000,
+            "Set breakpoint": 0x0000_0200_0000_0000,
+            "Conditional loop": 0x0000_0040_0000_0000,
+            "Done": 0x0004_0000_0000_0000,
+            "Row done": 0x0000_0020_0000_0000,
+            "IB switch": 0x0002_0000_0000_0000,
+            "IB clear": 0x0001_0000_0000_0000,
+            "KSP switch": 0x0000_0008_0000_0000,
+            "OSP clear": 0x0000_0000_0400_0000,
+            "BSP clear": 0x0000_0000_0000_8000,
+            "Load IB": 0x0400, "Load KSP": 0x0200, "Load OSP": 0x0100,
+            "Load BSP": 0x0080, "MULT1": 0x0040, "MULT2": 0x0020,
+            "ACC": 0x0008, "Store OSP": 0x0002, "Store OB": 0x0001,
         }
         for field, expected in vectors.items():
             with self.subTest(field=field):
                 self.assertEqual(self.compile_rows([self.active(**{field: 1})])[0], expected)
 
-    def test_split_osp_selector(self):
-        for selector, expected in [(1, 0x8), (2, 0x10), (4, 0x0800_0000_0000_0000),
-                                   (32, 0x4000_0000_0000_0000), (37, 0x4800_0000_0000_0008)]:
+    def test_contiguous_osp_selector(self):
+        for selector, expected in [(1, 0x0200_0000_0000_0000), (37, 0x4A00_0000_0000_0000),
+                                   (63, 0x7E00_0000_0000_0000)]:
             with self.subTest(selector=selector):
                 self.assertEqual(self.compile_rows([self.active(**{"OSP mux": selector})])[0], expected)
 
     def test_negative_deltas_use_sign_and_magnitude(self):
-        vectors = {"IB delta": 0x0002_4000_0000_0000, "KSP delta": 0x0000_0040_8000_0000,
-                   "OSP delta": 0x0000_0000_2010_0000, "BSP delta": 0x0000_0000_0004_8000}
+        vectors = {"IB delta": 0x0000_9000_0000_0000, "KSP delta": 0x0000_0004_0800_0000,
+                   "OSP delta": 0x0000_0000_0201_0000, "BSP delta": 0x0000_0000_0000_4800}
         for field, expected in vectors.items():
             with self.subTest(field=field):
                 self.assertEqual(self.compile_rows([self.active(**{field: -1})])[0], expected)
@@ -145,12 +145,12 @@ class ExporterTests(unittest.TestCase):
         values = {field.name: field.minimum if field.sign_bit is not None else field.maximum
                   for field in compiler.FIELDS}
         values.update({"ACC": 2, "MAX/MAC": 0})
-        self.assertEqual(self.compile_rows([{"Address": 511, **values}]), {511: 0xFFFF_FEFF_FFFF_9FDB})
+        self.assertEqual(self.compile_rows([{"Address": 511, **values}]), {511: 0xFFFF_FFEF_FFFF_FFF3})
 
     def test_seven_bit_ksp_magnitude(self):
-        for delta, expected in [(32, 0x0000_0010_0000_0000),
-                                (127, 0x0000_003F_8000_0000),
-                                (-127, 0x0000_007F_8000_0000)]:
+        for delta, expected in [(32, 0x0000_0001_0000_0000),
+                                (127, 0x0000_0003_F800_0000),
+                                (-127, 0x0000_0007_F800_0000)]:
             with self.subTest(delta=delta):
                 self.assertEqual(self.compile_rows([self.active(**{"KSP delta": delta})]),
                                  {0: expected})
@@ -168,22 +168,26 @@ class ExporterTests(unittest.TestCase):
 
     def test_independent_loop_selectors_and_6_bit_count(self):
         values = self.active(**{"Set iteration": 52, "Set breakpoint": 3, "Conditional loop": 2})
-        self.assertEqual(self.compile_rows([values]), {0: 0x0680_3800_0000_0000})
+        self.assertEqual(self.compile_rows([values]), {0: 0x01A0_0680_0000_0000})
+
+    def test_extended_loop_selectors_are_contiguous(self):
+        values = self.active(**{"Set breakpoint": 7, "Conditional loop": 5})
+        self.assertEqual(self.compile_rows([values]), {0: 0x0000_0F40_0000_0000})
 
     def test_zero_loop_count_can_be_stored(self):
         self.assertEqual(self.compile_rows([self.active(**{"Set breakpoint": 2})]),
-                         {0: 0x0000_2000_0000_0000})
+                         {0: 0x0000_0400_0000_0000})
 
     def test_done_can_share_the_final_store_instruction(self):
         self.assertEqual(self.compile_rows([self.active(**{"Done": 1, "Store OSP": 1})]),
-                         {0: 0x0010_0000_0000_0002})
+                         {0: 0x0004_0000_0000_0002})
 
     def test_row_done_can_share_a_store_without_halting(self):
         self.assertEqual(self.compile_rows([self.active(**{"Row done": 1, "Store OSP": 1})]),
-                         {0: 0x0000_0200_0000_0002})
+                         {0: 0x0000_0020_0000_0002})
 
     def test_numeric_integer_formats(self):
-        self.assertEqual(self.compile_rows([self.active(**{"IB delta": Decimal("1.0")})]), {0: 1 << 46})
+        self.assertEqual(self.compile_rows([self.active(**{"IB delta": Decimal("1.0")})]), {0: 1 << 44})
 
     def test_skip_unused_rows_but_keep_explicit_zero(self):
         rows = [{"Address": 0, "Field check": Formula('IF(1,"Unused",0)')},
@@ -206,7 +210,7 @@ class ExporterTests(unittest.TestCase):
         labels = {f"{buffer} switch": f"{buffer} select" for buffer in ["OB", "IB", "KSP"]}
         result = self.compile_rows([self.active(**{"OB switch": 1, "IB switch": 1,
                                                    "KSP switch": 1})], labels=labels)
-        self.assertEqual(result, {0: 0x8008_0080_0000_0000})
+        self.assertEqual(result, {0: 0x8002_0008_0000_0000})
 
     def test_legacy_and_new_buffer_headers_are_duplicates(self):
         headers = ["Address", *(field.name for field in compiler.FIELDS), "IB select"]
@@ -234,7 +238,7 @@ class ExporterTests(unittest.TestCase):
 
     def test_invalid_values_are_rejected(self):
         for field, value in [("OB switch", 2), ("OSP mux", 64), ("Set iteration", 64),
-                             ("Set breakpoint", 4), ("Conditional loop", 4), ("Done", 2),
+                             ("Set breakpoint", 8), ("Conditional loop", 8), ("Done", 2),
                              ("IB clear", 2), ("OSP clear", 2), ("BSP clear", 2),
                              ("IB delta", -8), ("KSP delta", 128), ("KSP delta", -128), ("OSP delta", 512),
                              ("BSP delta", -8), ("Load IB", 0.5), ("MULT1", "1"),

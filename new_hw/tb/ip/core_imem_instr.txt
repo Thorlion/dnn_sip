@@ -1,10 +1,10 @@
 // One 64-bit binary instruction per line, MSB [63] to LSB [0].
 // Instruction n is programmed as four 16-bit words at addresses 4*n through 4*n+3.
-// The loader writes the low word first. Reserved [41:40] and [14:13] are zero.
-// DONE is bit 52; loop selectors and clear/sign/offset fields use the new layout.
-// IB read-buffer switch is bit 51; KSP read-buffer switch is bit 39.
+// The loader writes the low word first. Reserved bit 36 is zero.
+// DONE is bit 50. SET is [43:41] and LOOP is [40:38].
+// IB read-buffer switch is bit 49. KSP read-buffer switch is bit 35.
 // OB write-buffer switch is bit 63: 0 holds, 1 toggles before this instruction.
-// OSP mux select remains absolute at {[62:59], [4:3]}.
+// OSP mux select is the absolute lane index at [62:57].
 // See ../../INSTRUCTION_FORMAT.md for field positions. Unspecified slots are zero-filled.
 // Placeholder: no loads or stores; selects the zero-result MAC operation.
 0000000000000000_0000000000000000_0000000000000000_0000000000000000

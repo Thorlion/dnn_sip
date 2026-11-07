@@ -37,12 +37,12 @@ computed `Field check` formulas are ignored and do not need recalculation.
 
 Addresses are instruction indices in `0..511`, with no duplicate active
 addresses. Delta fields use signed magnitudes: IB `-7..7`, KSP
-`-127..127`, OSP `-511..511`, BSP `-7..7`. KSP uses sign bit 38 and the seven
-magnitude bits `[37:31]`; older KSP images must be re-encoded. KSP clear is
-removed; OSP clear remains bit 30. An obsolete KSP clear worksheet column
+`-127..127`, OSP `-511..511`, BSP `-7..7`. KSP uses sign bit 34 and the seven
+magnitude bits `[33:27]`. OSP clear is at bit 26. An obsolete KSP clear worksheet column
 may be blank or zero, but a nonzero value is rejected.
-The exporter encodes the separate
-sign/magnitude bits and splits OSP mux selection across `[62:59]` and `[4:3]`.
+The exporter packs every field into a contiguous bit range. OSP mux occupies
+`[62:57]`, SET occupies `[43:41]`, and LOOP occupies `[40:38]`.
+Export the saved worksheet again to use the new layout.
 ACC 3 is reserved and MAX/MAC 1 is unimplemented; both are rejected.
 
 `IB switch`, `KSP switch` and `OB switch` are independent one-bit commands:
@@ -65,7 +65,7 @@ their counter with the unsigned offset magnitude (`abs(delta)`) at the issue
 edge, ignoring the sign for this direct load. The current address still uses
 the old counter plus/minus its delta. Clear with delta=0 loads zero.
 KSP always captures its calculated address and has no direct-load control.
-Set breakpoint selects context 1, 2 or 3
+Set breakpoint selects context 1 through 7
 and loads both PC+1 and the 6-bit Set iteration count (`0..63`). Selector 0
 stores nothing. Conditional loop selects which context to check/decrement;
 0 performs no jump. Count N permits N taken jumps, hence N+1 body executions.
@@ -77,7 +77,7 @@ after the final instruction drains. It may share an instruction with a
 final store. Reset or SCR clears completion. Older workbooks must add the
 IB/OSP/BSP clear controls and Done; old hexadecimal images require re-encoding.
 
-`Row done` is the new one-bit field at instruction bit 41. Enter 0 for an
+`Row done` is at instruction bit 37. Enter 0 for an
 ordinary instruction and 1 for a row-completion marker. It may share the
 final store and emits `o_row_done` after that instruction's final store is
 accepted, three clocks after issue. It does not halt the slave. Put a marker
@@ -98,9 +98,9 @@ explicit addresses. Gaps use standard `$readmemh` address markers, for example:
 
 ```text
 @007
-0008008000001982
+0002000800000662
 @00B
-C800000000028609
+CA00000000002981
 ```
 
 These words occupy instruction addresses 7 and 11. Locations between them
