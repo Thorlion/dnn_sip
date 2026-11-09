@@ -111,14 +111,20 @@ The instruction's own loads, arithmetic and stores still execute. If it
 issues on edge N, its final OSP/OB store is accepted on edge N+3; `o_done`
 asserts after that edge and stays high until reset or another start/SCR.
 A new start clears pending completion, redirects fetch and resumes issue.
-The system exposes this as `o_slave_done`; no master-readable status CSR or
-automatic master stall is caused by DONE. ROW_DONE/WAIT_ROW provides a
-separate synchronization mechanism described below.
+The system exposes this as `o_slave_done` and connects it to the master.
+`WAIT_DONE` holds master fetch and decode until this level is high. A wait
+following SCR ignores the old level until the new run has started.
+Use this wait for setup, bank switches, intermediate passes, and output
+packing. The instruction uses opcode `7'b0101011` with `funct3 = 001`.
+
+```asm
+.word 0x0000102b  # WAIT_DONE: wait for the slave to finish and halt
+```
 
 ## ROW_DONE and master WAIT_ROW
 
-Slave bit 37 is ROW_DONE. Set it on the last instruction of a row's work,
-including a final store if needed. An instruction issued at edge N produces
+Slave bit 37 is ROW_DONE. Set it only after the last pass for a loaded
+input row, including a final store if needed. An instruction issued at edge N produces
 `dsip_slave.o_row_done` after its final store is accepted at edge N+3. The
 output is a one-cycle event per marked instruction. Consecutive marked
 instructions produce events on consecutive cycles. ROW_DONE neither holds
@@ -132,9 +138,9 @@ remembers one unconsumed event, including one received before WAIT_ROW.
 Reset and SCR clear that pending event. Multiple events before consumption
 coalesce into one; this is not a row counter or a queue.
 
-The master instruction `WAIT_ROW` uses opcode `7'b0101011` (custom-1).
-Its canonical 32-bit word is `32'h0000_002B`; all other fields are unused,
-and it reads or writes no architectural registers. In decode it holds the
+The master instruction `WAIT_ROW` uses opcode `7'b0101011` (custom-1)
+with `funct3 = 000`. Its canonical word is `32'h0000_002B`. Both wait
+instructions leave architectural registers alone. In decode, `WAIT_ROW` holds the
 PC and IF/ID register until a live or pending row event is available. Older
 instructions finish while EX receives bubbles. It then consumes one event
 and continues, so a second WAIT_ROW needs a second event. A taken older
@@ -212,7 +218,7 @@ instruction index, not a byte address or a 16-bit programming word address.
 At the default `PC_W=9`, software must supply an index in `0..511`. Connect
 the master's `o_slave_start` to `i_start` and
 `o_slave_pc[PC_W-1:0]` to `i_start_pc`.
-[`single_system_top.sv`](tb/single_system/single_system_top.sv) makes these
+[`single_system_top.sv`](tb/single_system/tb/single_system_top.sv) makes these
 connections directly.
 
 On the start edge, the PC loads `i_start_pc` and IMEM reads that same address.
@@ -400,7 +406,7 @@ The standalone [DMA read decoder](ip/dma/README.md#dma-read-address-decoder)
 maps DMA1 source word addresses `0x0004_0000..0x0004_03FF` to OB buffer 0
 and `0x0004_0400..0x0004_07FF` to buffer 1. DMA address bit 10 selects the
 buffer, and bits [9:0] select the local word.
-[`single_system_top.sv`](tb/single_system/single_system_top.sv) connects the
+[`single_system_top.sv`](tb/single_system/tb/single_system_top.sv) connects the
 decoder and DMA1 to the slave while keeping OM outside the DUT.
 
 Decoded Load IB/KSP/OSP/BSP bits request reads. Existing `i_*_en` inputs act

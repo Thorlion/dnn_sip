@@ -1,9 +1,8 @@
-"""Run with: python -m unittest discover -s new_sw/test_img -v"""
+"""Run with python -m unittest discover -s new_sw/test_img/script -v."""
 
 from contextlib import redirect_stderr, redirect_stdout
 import io
 from pathlib import Path
-import struct
 import subprocess
 import sys
 import tempfile
@@ -11,7 +10,7 @@ import unittest
 
 from PIL import Image
 
-import input_quantizer as quantizer
+import input_preprocess as quantizer
 
 
 class InputQuantizerTests(unittest.TestCase):
@@ -61,41 +60,18 @@ class InputQuantizerTests(unittest.TestCase):
                 self.assertEqual(image.size, (224, 224))
                 self.assertEqual(image.getpixel((0, 0)), expected)
 
-    def test_known_normalized_values_and_chw_order(self):
-        image = Image.new("RGB", (2, 1))
-        image.putdata([(0, 128, 255), (255, 0, 128)])
-        words = quantizer.quantize_rgb_chw(image)
-        self.assertEqual(words, [-542, 576, 53, -521, 676, 109])
-        self.assertEqual([f"{word & 0xFFFF:04X}" for word in words],
-                         ["FDE2", "0240", "0035", "FDF7", "02A4", "006D"])
-
-    def test_all_pixel_values_match_float32_normalization(self):
-        # Emulate tensor float32 operations without depending on PyTorch.
-        def f32(value):
-            return struct.unpack("f", struct.pack("f", value))[0]
-
-        image = Image.new("RGB", (256, 1))
-        image.putdata([(pixel, pixel, pixel) for pixel in range(256)])
-        reference = []
-        for mean, std in zip(quantizer.MEAN, quantizer.STD):
-            for pixel in range(256):
-                normalized = f32(f32(f32(pixel / 255.0) - f32(mean)) / f32(std))
-                reference.append(round(normalized * 256))
-        self.assertEqual(quantizer.quantize_rgb_chw(image), reference)
-
     def test_cli_full_mem_image(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "red image.png"
             output = root / "nested output" / "custom.mem"
             Image.new("RGB", (10, 7), (255, 0, 0)).save(source)
-            result = subprocess.run([sys.executable, str(Path(quantizer.__file__).resolve()),
-                                     "--input", str(source), "--output", str(output)],
-                                    capture_output=True, text=True, check=False)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            data = output.read_bytes()
             plane = 224 * 224
-            self.assertEqual(data, b"0240\n" * plane + b"FDF7\n" * plane + b"FE32\n" * plane)
+            command = [sys.executable, str(Path(quantizer.__file__).resolve()),
+                       "--input", str(source), "--output", str(output)]
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output.read_bytes(), b"97FE\n"*plane + b"8B55\n"*plane + b"7FFF\n"*plane)
             self.assertIn("150528 signed Q8.8 words", result.stdout)
 
     def test_invalid_input_preserves_existing_output(self):

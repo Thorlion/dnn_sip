@@ -77,7 +77,7 @@ BSP remains single-port, with programming writes taking priority over
 execution reads. IMEM programming pauses instruction issue.
 
 The decoder is instantiated by
-[`single_system_top.sv`](../../tb/single_system/single_system_top.sv).
+[`single_system_top.sv`](../../tb/single_system/tb/single_system_top.sv).
 It does not implement buffer ownership scheduling or address feedback.
 
 ## DMA read address decoder
@@ -121,4 +121,4 @@ write to the same physical buffer is suppressed by the slave, without retry.
 Schedule DMA reads from a buffer that the core is not writing.
 
 The decoder is instantiated between DMA1 and the slave in
-[`single_system_top.sv`](../../tb/single_system/single_system_top.sv).
+[`single_system_top.sv`](../../tb/single_system/tb/single_system_top.sv).

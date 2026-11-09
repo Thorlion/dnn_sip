@@ -33,11 +33,13 @@ import riscv_pkg::*;
  * @param o_slave_start    SCR slave-start strobe in EX
  * @param o_slave_pc       Forwarded rs1 slave PC, valid with o_slave_start
  * @param i_slave_row_done One-cycle row-completion event in the same clock domain
+ * @param i_slave_done     Sticky slave completion for WAIT_DONE
  */
 module PipelinedCPU (
     input  logic             clk,
     input  logic             rst,
     input  logic             i_slave_row_done,
+    input  logic             i_slave_done,
     output logic [ALEN-1:0]  imem_addr,
     input  logic [31:0]      imem_data,
     output logic             imem_en,
@@ -107,6 +109,7 @@ module PipelinedCPU (
     logic            w_id_wen_dma0, w_id_wen_dma1;
     logic            w_id_slave_start;
     logic            w_id_wait_row;
+    logic            w_id_wait_done;
 
     // ID/EX Register Signals
     logic [XLEN-1:0] id_ex_pc, id_ex_pc_plus_4;
@@ -165,11 +168,13 @@ module PipelinedCPU (
     logic            r_row_done_pending;
     logic            w_row_done_available;
     logic            w_wait_row_stall;
+    logic            w_wait_done_stall;
+    logic            w_slave_wait_stall;
     logic            w_consume_row_done;
 
     assign branch_taken_ex = branch_taken | id_ex_jalr;
 
-    // WAIT_ROW stays in ID while older EX/MEM/WB instructions drain. Insert
+    // Slave waits stay in ID while older EX/MEM/WB instructions drain. Insert
     // EX bubbles rather than holding an instruction that could repeat a DMA
     // write, SCR pulse, store, or register write. A taken older branch kills
     // a wrong-path wait without consuming its event.
@@ -177,11 +182,16 @@ module PipelinedCPU (
                                   !o_slave_start;
     assign w_wait_row_stall = w_id_wait_row && !w_row_done_available &&
                               !branch_taken_ex && !rst;
+    // DONE is cleared on the edge that accepts SCR. Block stale DONE while
+    // that SCR is still in EX and the next WAIT_DONE is already in ID.
+    assign w_wait_done_stall = w_id_wait_done && (!i_slave_done || o_slave_start) &&
+                               !branch_taken_ex && !rst;
     assign w_consume_row_done = w_id_wait_row && w_row_done_available &&
                                 !w_hazard_stall_id && !branch_taken_ex && !rst;
-    assign stall_if = w_hazard_stall_if || w_wait_row_stall;
-    assign stall_id = w_hazard_stall_id || w_wait_row_stall;
-    assign flush_ex = w_hazard_flush_ex || w_wait_row_stall;
+    assign w_slave_wait_stall = w_wait_row_stall || w_wait_done_stall;
+    assign stall_if = w_hazard_stall_if || w_slave_wait_stall;
+    assign stall_id = w_hazard_stall_id || w_slave_wait_stall;
+    assign flush_ex = w_hazard_flush_ex || w_slave_wait_stall;
 
     // One pending event, cleared by reset or a new SCR. A live event can be
     // consumed directly. If an older pending event is consumed as a new event
@@ -275,7 +285,8 @@ module PipelinedCPU (
         .o_wen_dma0(w_id_wen_dma0),
         .o_wen_dma1(w_id_wen_dma1),
         .o_slave_start(w_id_slave_start),
-        .o_wait_row(w_id_wait_row)
+        .o_wait_row(w_id_wait_row),
+        .o_wait_done(w_id_wait_done)
     );
 
     HazardUnit hazard_unit_inst (

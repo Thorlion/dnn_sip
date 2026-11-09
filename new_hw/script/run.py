@@ -37,13 +37,8 @@ class TestSpec:
     pass_marker: str
     waveform: str
     result_label: str = "PASS"
+    layer_id: int | None = None
 
-
-SINGLE_SYSTEM_OM_ASSETS = (
-    "tb/single_system/om_mem/input_img.mem",
-    "tb/single_system/om_mem/Conv1/conv1_weight.mem",
-    "tb/single_system/om_mem/Conv1/conv1_bias.mem",
-)
 
 TESTS = {
     "master_dma": TestSpec(
@@ -80,8 +75,9 @@ TESTS = {
         pass_marker="MASTER_DMA_TB_PASS",
         waveform="master_dma.vcd",
     ),
-    "single_system": TestSpec(
-        top="single_system_tb",
+    "conv1_full": TestSpec(
+        top="single_conv_tb",
+        layer_id=1,
         sources=(
             "ip/master_core/riscv_pkg.sv",
             "common/reg.sv",
@@ -118,32 +114,23 @@ TESTS = {
             "top/dsip_slave.sv",
             "top/dma_write_top.sv",
             "top/dma_read_top.sv",
-            "tb/single_system/single_system_top.sv",
-            "tb/single_system/single_system_tb.sv",
+            "tb/single_system/tb/single_system_top.sv",
+            "tb/single_system/tb/single_system_tb.sv",
+            "tb/single_system/tb/single_conv_tb.sv",
         ),
         assets=(
-            "tb/single_system/master_mem/single_master_imem.mem",
-            "tb/single_system/slave_mem/single_slave_imem.mem",
-        ) + SINGLE_SYSTEM_OM_ASSETS,
+            "tb/single_system/master_mem/conv1_master_imem.mem",
+            "tb/single_system/slave_mem/conv1_slave_imem.mem",
+            "tb/single_system/om_mem/Conv1/input_img.mem",
+            "tb/single_system/om_mem/Conv1/conv1_weight.mem",
+        ),
         result_log="single_system_result.log",
-        pass_marker="SINGLE_SYSTEM_TB_FINISHED",
+        pass_marker="CONV1_FULL_TB_PASS",
         waveform="single_system.vcd",
-        result_label="FINISHED",
     ),
 }
 
-TESTS["conv1_channel0"] = TestSpec(
-    top="conv1_channel0_tb",
-    sources=TESTS["single_system"].sources + ("tb/single_system/conv1_channel0_tb.sv",),
-    assets=(
-        "tb/single_system/master_mem/conv1_channel0_master_imem.mem",
-        "tb/single_system/slave_mem/conv1_channel0_slave_imem.mem",
-        "tb/single_system/reference/conv1_channel0_osp.mem",
-    ) + SINGLE_SYSTEM_OM_ASSETS,
-    result_log="single_system_result.log",
-    pass_marker="CONV1_CHANNEL0_TB_PASS",
-    waveform="single_system.vcd",
-)
+TESTS["single_system"] = TESTS["conv1_full"]
 
 TESTS["agu_loop"] = TestSpec(
     top="agu_loop_tb",
@@ -154,12 +141,63 @@ TESTS["agu_loop"] = TestSpec(
     waveform="agu_loop.vcd",
 )
 
-TESTS["conv1_rgb21"] = TestSpec(
-    top="conv1_rgb21_tb",
-    sources=TESTS["single_system"].sources + ("tb/single_system/conv1_rgb21_tb.sv",),
-    assets=TESTS["single_system"].assets + ("tb/single_system/reference/conv1_rgb21_osp.mem",),
+TESTS["conv2_full"] = TestSpec(
+    top="single_conv_tb",
+    layer_id=2,
+    sources=TESTS["conv1_full"].sources,
+    assets=(
+        "tb/single_system/master_mem/conv2_master_imem.mem",
+        "tb/single_system/slave_mem/conv2_slave_imem.mem",
+        "tb/single_system/om_mem/Conv2/conv2_input.mem",
+        "tb/single_system/om_mem/Conv2/conv2_weight.mem",
+    ),
     result_log="single_system_result.log",
-    pass_marker="CONV1_RGB21_TB_PASS",
+    pass_marker="CONV2_FULL_TB_PASS",
+    waveform="single_system.vcd",
+)
+
+TESTS["conv3_full"] = TestSpec(
+    top="single_conv_tb",
+    layer_id=3,
+    sources=TESTS["conv1_full"].sources,
+    assets=(
+        "tb/single_system/master_mem/conv3_master_imem.mem",
+        "tb/single_system/slave_mem/conv3_slave_imem.mem",
+        "tb/single_system/om_mem/Conv3/conv3_input.mem",
+        "tb/single_system/om_mem/Conv3/conv3_weight.mem",
+    ),
+    result_log="single_system_result.log",
+    pass_marker="CONV3_FULL_TB_PASS",
+    waveform="single_system.vcd",
+)
+
+TESTS["conv4_full"] = TestSpec(
+    top="single_conv_tb",
+    layer_id=4,
+    sources=TESTS["conv1_full"].sources,
+    assets=(
+        "tb/single_system/master_mem/conv4_master_imem.mem",
+        "tb/single_system/slave_mem/conv4_slave_imem.mem",
+        "tb/single_system/om_mem/Conv4/conv4_input.mem",
+        "tb/single_system/om_mem/Conv4/conv4_weight.mem",
+    ),
+    result_log="single_system_result.log",
+    pass_marker="CONV4_FULL_TB_PASS",
+    waveform="single_system.vcd",
+)
+
+TESTS["conv5_full"] = TestSpec(
+    top="single_conv_tb",
+    layer_id=5,
+    sources=TESTS["conv1_full"].sources,
+    assets=(
+        "tb/single_system/master_mem/conv5_master_imem.mem",
+        "tb/single_system/slave_mem/conv5_slave_imem.mem",
+        "tb/single_system/om_mem/Conv5/conv5_input.mem",
+        "tb/single_system/om_mem/Conv5/conv5_weight.mem",
+    ),
+    result_log="single_system_result.log",
+    pass_marker="CONV5_FULL_TB_PASS",
     waveform="single_system.vcd",
 )
 
@@ -300,6 +338,8 @@ def native_run(args: argparse.Namespace) -> int:
     command = [verilator, "--binary", "--timing", "--top-module", spec.top,
                "--Mdir", str(build), "-o", binary_name, "--build-jobs", str(args.jobs),
                "--timescale", "1ns/1ps", "-Wno-fatal"]
+    if spec.layer_id is not None:
+        command.append(f"-GLAYER_ID={spec.layer_id}")
     if args.wave:
         # --trace is the VCD spelling supported by the installed Verilator 5.020.
         # Include the small payload memories, excluding the master's large RAMs.

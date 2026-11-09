@@ -1,8 +1,11 @@
 # Single-system integration
 
-`single_system_top.sv` contains one master core, one slave core, DMA0, DMA1
+`tb/single_system_top.sv` contains one master core, one slave core, DMA0, DMA1
 and both DMA address decoders. OM remains outside the DUT in
-`single_system_tb.sv`.
+`tb/single_system_tb.sv`.
+
+The CONV1–5 weight prefetch plans and XSim cycle counts are recorded in
+[WEIGHT_PREFETCH.md](WEIGHT_PREFETCH.md).
 
 ```text
 Master DMA_CONFIG --> DMA0 CSRs / DMA1 CSRs
@@ -12,91 +15,230 @@ OM async read --> DMA0 --> write decoder --> IB / KSP / BSP / slave IMEM
 OM clocked write <-- DMA1 <-- read decoder + synchronous slave OB read
 ```
 
-## File-driven testbench
+## Full 96-filter CONV1
 
-The bench supplies clock/reset, a 512 KiB asynchronous-read/clocked-write OM,
-image/parameter preloads, OM address checks, optional waves, and a result log.
-Your master and slave instruction files supply the programs. The bench no
-longer constructs instructions in OM, injects example operands, or checks a
-particular DMA sequence, start PC, output lane, word count, or arithmetic result.
-
-The program inputs are:
-
-| Purpose | Source file under this directory | Format |
-| --- | --- | --- |
-| Master program | `master_mem/single_master_imem.mem` | 32-bit hexadecimal words |
-| Slave program | `slave_mem/single_slave_imem.mem` | 64-bit hexadecimal words |
-| Input image | `om_mem/input_img.mem` | 16-bit hexadecimal words |
-| CONV1 weights | `om_mem/Conv1/conv1_weight.mem` | 16-bit hexadecimal words |
-| CONV1 biases | `om_mem/Conv1/conv1_bias.mem` | 16-bit hexadecimal words |
-
-The runner copies all five files into its output directory using their
-basenames. The bench and top therefore refer to `single_master_imem.mem`,
-`single_slave_imem.mem`, `input_img.mem`, `conv1_weight.mem`, and
-`conv1_bias.mem` relative to the simulator working directory. For manual
-simulation, stage the files the same way or adjust those filename arguments.
-
-`single_system_top.MASTER_IMEM_FILE` and `.SLAVE_IMEM_FILE` pass through the
-existing memory wrappers. Slave records use instruction indices, with one
-64-bit instruction per word (16 hex digits, bit 63 first). Each physical
-16-bit bank loads its slice of the same image. The bench does not copy the
-slave program through OM/DMA or overwrite its preload. Your master program
-can still program slave IMEM through DMA0 when explicitly instructed.
-
-The default programs process input rows 1..21 for each of the three RGB
-channels. Each of the 64 lanes completes four output rows at OSP addresses
-0..219. DMA0 alternates the IB buffers and prefetches the next channel's
-weights in the inactive KSP buffer while the current channel runs.
-The master issues one SCR per channel. The slave uses entry PC 0 to start
-the channel-0 sums and entry PC 216 to accumulate channels 1 and 2.
-The master parks after consuming the last channel's final ROW_DONE event.
-See the [master schedule](master_mem/README.md) and
-[slave schedule](slave_mem/README.md).
-
-The earlier 41-row channel-0 workload is available through
-`test=conv1_channel0`. Its slave image still comes from `single_temp.xlsx`.
-
-## OM memory map
-
-Addresses and DMA transfer counts use **16-bit words**; DMA CSR offsets use
-bytes. The OM array spans `0x00000000..0x0003FFFF` (262144 words, 512 KiB).
-These OM addresses are independent of the slave decoder address space.
-
-| Contents | First word | Last word (inclusive) | Words | Payload bytes |
-| --- | --- | --- | ---: | ---: |
-| Input image, RGB CHW, 224 x 224 | `0x00010000` | `0x00034BFF` | 150528 | 301056 |
-| CONV1 weights, 64 x 3 x 11 x 11 | `0x00035000` | `0x0003AABF` | 23232 | 46464 |
-| CONV1 biases | `0x0003B000` | `0x0003B03F` | 64 | 128 |
-
-All values retain signed Q8.8 two's-complement encoding. Preloads occupy
-173824 words (347648 bytes, 339.5 KiB). Other locations, including the former
-smoke-test program/data/result locations, retain `0xA55A` until written.
-
-Image address: `0x10000 + c*224*224 + y*224 + x`, with R=0, G=1, B=2.
-Planes occupy `0x10000..0x1C3FF`, `0x1C400..0x287FF`, and
-`0x28800..0x34BFF`. Weights retain the supplied binary file's flat order.
-For contiguous TorchVision OIHW exports, weight `[o,i,ky,kx]` is at
-`0x35000 + ((o*3 + i)*11 + ky)*11 + kx`. Bias `o` is at `0x3B000 + o`.
-
-Parameter regeneration is documented in
-[`new_sw/parameter/README.md`](../../../new_sw/parameter/README.md).
-To replace the image, run from `source`:
+Run from `source`:
 
 ```powershell
-python new_sw/test_img/script/input_quantizer.py --input path/to/image.jpg --output new_hw/tb/single_system/om_mem/input_img.mem
+python new_sw/core_instruction/conv1_full_program.py
+python new_hw/script/run.py test=conv1_full
 ```
 
-OM uses independent read/write ports without wait states. Reads are
-combinational when enabled; writes occur at the rising clock edge. A read
-of a simultaneously written word supplies the old value at that edge and
-reflects the new value after the nonblocking update. Unknown OM request
-signals and invalid enabled addresses cause a fatal error.
+This workload uses `master_mem/conv1_master_imem.mem` and
+`slave_mem/conv1_slave_imem.mem`. For manual simulation, use
+`single_conv1_tb` as the testbench top and stage both programs alongside the
+Caffe assets `om_mem/Conv1/input_img.mem` and `om_mem/Conv1/conv1_weight.mem`, using
+their basenames. The full test instantiates 2 MiB of OM and checks all
+290,400 output words against the BGR image and Caffe weights. The input crop
+is 224 × 224 with implicit padding of 2 in the slave schedule.
+
+The master computes four output rows per tile, with three rows in the final
+tile. Each tile uses two filter batches. OSP addresses 0–219 hold filters
+0–63, and addresses 256–475 in lanes 0–31 hold filters 64–95. The slave
+accumulates all three input channels in each batch. The master alternates
+batch order across tiles so only lanes 0–31 need their weights reloaded
+between the two batches. KSP buffer 0 holds input-channel offsets 0–120
+and 128–248. Buffer 1 holds offsets 0–120 for the middle input channel.
+DMA0 prefetches the next input row into the other IB buffer.
+
+The result contains raw signed Q8.8 dot products. The workload loads zero
+into BSP[0] so the existing output adder passes the OSP value through.
+For hardware execution, supply zero at OM word `0x3D820`, immediately after
+the last weight at `0x3D81F`. The dummy LUT passes the value through to OB.
+
+DMA1 alternates OB buffers and drains 283 full 1,024-word blocks, then
+the final 608 words. An OB block can span two OSP tiles. The feature map is
+pixel-major, with filters 0–95 adjacent at each pixel.
+
+```text
+OM[0x40000 + (y*55 + x)*96 + filter]
+```
+
+The last word is `0x86E5F`. The checker confirms sequential OM writes,
+correct DMA1 block boundaries, and separation of OB reads and writes.
+The exported `conv1_feature_map.mem` and the result log are in
+`DSIP/tmp/verilator/conv1_full/`.
+
+## Grouped CONV2
+
+Run from `source` in this order. The preparation script uses the raw
+`55 × 55 × 96` CONV1 dump from the first run by default.
+
+```powershell
+python new_hw/script/run.py test=conv1_full
+python new_sw/core_instruction/conv2_prepare_input.py
+python new_sw/model/script/bin_to_mem.py --input new_sw/model/alexnet_q88/conv2_weight.bin --output new_hw/tb/single_system/om_mem/Conv2/conv2_weight.mem
+python new_sw/core_instruction/conv2_program.py
+python new_hw/script/run.py test=conv2_full
+```
+
+The preparation script adds the quantized Caffe CONV1 bias, applies ReLU
+and five-channel local response normalization, then pools with a 3 × 3
+window and stride 2. It writes `27 × 27 × 96` signed Q8.8 samples in CHW
+order. The script starts from the DSIP dot products, including the existing
+Q8.8 truncation and wrap, and quantizes again after pooling.
+
+CONV2 uses 256 filters of shape `48 × 5 × 5`, stride 1, padding 2, and two
+groups. Filter batches 0 and 1 read channels 0–47. Batches 2 and 3 read
+channels 48–95. Four OSP regions hold up to four output rows for each batch.
+DMA0 loads eight input-channel slices per KSP bank and prefetches image rows
+into alternating IB banks. CONV2 exports raw dot products using the zero
+bias operand.
+
+| CONV2 OM data | Word addresses | Words |
+| --- | --- | ---: |
+| Prepared input | `0x10000..0x2115F` | 69,984 |
+| Caffe weights | `0x35000..0x7FFFF` | 307,200 |
+| Zero-bias operand | `0x80000` | 1 |
+| Pixel-major output | `0x90000..0xBD8FF` | 186,624 |
+
+DMA1 alternates OB banks and writes 182 full blocks and a 256-word tail.
+Output `y, x, filter` is at `0x90000 + (y*27 + x)*256 + filter`.
+The checker compares every output word with a grouped fixed-point reference
+and exports `conv2_feature_map.mem` in `DSIP/tmp/verilator/conv2_full/`.
+For manual simulation, select `single_conv2_tb` from `tb/single_conv2_tb.sv` and
+stage the two `conv2_*_imem.mem` images, `conv2_input.mem`, and
+`conv2_weight.mem` by basename.
+
+## CONV3
+
+Run these commands from `source` after the CONV2 simulation has produced its
+feature map.
+
+```powershell
+python new_sw/core_instruction/conv3_prepare_input.py
+python new_sw/model/script/bin_to_mem.py --input new_sw/model/alexnet_q88/conv3_weight.bin --output new_hw/tb/single_system/om_mem/Conv3/conv3_weight.mem
+python new_sw/core_instruction/conv3_program.py
+python new_hw/script/run.py test=conv3_full
+```
+
+The preparation script applies Caffe's CONV2 bias, ReLU, five-channel local
+response normalization, and 3 × 3 stride-2 max pooling to the raw DSIP dump.
+It emits `13 × 13 × 256` signed Q8.8 samples in CHW order.
+
+CONV3 uses 384 filters of shape `256 × 3 × 3`, stride 1, and padding 1.
+The slave runs six batches of 64 filters. Each batch uses a separate OSP
+region of 85 words per lane. The program computes output tiles of six, six,
+and one row, loading 16 input-channel weight slices into each KSP bank at a
+time. CONV3 exports raw dot products using the zero bias operand.
+
+| CONV3 OM data | Word addresses | Words |
+| --- | --- | ---: |
+| Prepared input | `0x10000..0x1A8FF` | 43,264 |
+| Caffe weights | `0x35000..0x10CFFF` | 884,736 |
+| Zero-bias operand | `0x10D000` | 1 |
+| Pixel-major output | `0x110000..0x11FD7F` | 64,896 |
+
+The test uses 4 MiB of OM. DMA1 alternates OB banks and writes 63 full
+blocks followed by a 384-word tail. A full block can end within a pixel's
+384 filters. Output `y, x, filter` is at `0x110000 + (y*13 + x)*384 + filter`.
+The checker exports `conv3_feature_map.mem` in `DSIP/tmp/verilator/conv3_full/`.
+For manual simulation, select `single_conv3_tb` from `tb/single_conv3_tb.sv` and
+stage both `conv3_*_imem.mem` images, `conv3_input.mem`, and `conv3_weight.mem`
+by basename.
+
+## Grouped CONV4
+
+Run these commands from `source` after the CONV3 simulation produces its
+feature map.
+
+```powershell
+python new_sw/core_instruction/conv4_prepare_input.py
+python new_sw/model/script/bin_to_mem.py --input new_sw/model/alexnet_q88/conv4_weight.bin --output new_hw/tb/single_system/om_mem/Conv4/conv4_weight.mem
+python new_sw/core_instruction/conv4_program.py
+python new_hw/script/run.py test=conv4_full
+```
+
+The preparation script adds Caffe CONV3 bias, applies ReLU, and writes
+`13 × 13 × 384` Q8.8 samples in CHW order. The CONV4 schedule uses `3 × 3`
+kernels, stride 1, and padding 1. Filters 0–191 read input channels 0–191.
+Filters 192–383 read channels 192–383. Each group runs in three 64-filter
+batches, with 24 input-channel weight slices loaded into each KSP bank at a
+time. The OSP and OB packing follow the same schedule as CONV3.
+
+| CONV4 OM data | Word addresses | Words |
+| --- | --- | ---: |
+| Prepared input | `0x10000..0x1FD7F` | 64,896 |
+| Caffe weights | `0x35000..0xD6FFF` | 663,552 |
+| Zero-bias operand | `0x10D000` | 1 |
+| Pixel-major output | `0x110000..0x11FD7F` | 64,896 |
+
+The separate test reuses the CONV3 address bases and 4 MiB OM. The checker
+exports raw CONV4 dot products to `conv4_feature_map.mem` in
+`DSIP/tmp/verilator/conv4_full/`. For manual simulation, select `single_conv4_tb`
+from `tb/single_conv4_tb.sv` and stage both `conv4_*_imem.mem` images,
+`conv4_input.mem`, and `conv4_weight.mem` by basename.
+
+## Grouped CONV5
+
+Run these commands from `source` after the CONV4 simulation produces its
+feature map.
+
+```powershell
+python new_sw/core_instruction/conv5_prepare_input.py
+python new_sw/model/script/bin_to_mem.py --input new_sw/model/alexnet_q88/conv5_weight.bin --output new_hw/tb/single_system/om_mem/Conv5/conv5_weight.mem
+python new_sw/core_instruction/conv5_program.py
+python new_hw/script/run.py test=conv5_full
+```
+
+The preparation script adds Caffe CONV4 bias and applies ReLU to produce
+`13 × 13 × 384` Q8.8 samples in CHW order. The CONV5 schedule uses `3 × 3`
+kernels, stride 1, and padding 1. Filters 0–127 read input channels 0–191,
+and filters 128–255 read input channels 192–383. Each group runs in two
+64-filter batches, with 24 input-channel weight slices per KSP load.
+
+The slave computes an eight-row tile and a five-row tile. The eight-row
+tile ends on a full OB boundary, and DMA1 drains 42 full blocks plus a
+final 256-word block across the two tiles. The output contains raw CONV5
+dot products.
+
+| CONV5 OM data | Word addresses | Words |
+| --- | --- | ---: |
+| Prepared input | `0x10000..0x1FD7F` | 64,896 |
+| Caffe weights | `0x35000..0xA0FFF` | 442,368 |
+| Zero-bias operand | `0x10D000` | 1 |
+| Pixel-major output | `0x110000..0x11A8FF` | 43,264 |
+
+The separate simulation uses the same 4 MiB OM and address bases as CONV4.
+The checker exports `conv5_feature_map.mem` in `DSIP/tmp/verilator/conv5_full/`.
+For manual simulation, select `single_conv5_tb` from `tb/single_conv5_tb.sv` and
+stage both `conv5_*_imem.mem` images, `conv5_input.mem`, and `conv5_weight.mem`
+by basename.
+
+## File-driven testbench
+
+`test=single_system` is an alias for `test=conv1_full`. Both run the full
+96-filter Caffe workload and check the OM output against the Q8.8 reference.
+The runner stages the program images, `om_mem/Conv1/input_img.mem`, and
+`om_mem/Conv1/conv1_weight.mem` by basename.
+
+The bare `single_system_tb` used by the Vivado project defaults to CONV1.
+It expects `conv1_master_imem.mem`, `conv1_slave_imem.mem`, `input_img.mem`,
+and `conv1_weight.mem` in the simulator working directory. Each layer wrapper
+sets `LAYER_ID` on the shared `single_conv_tb`, which overrides the harness
+parameters and checks the output.
+
+The testbench supplies clock, reset, OM preloads, address checks, and logging.
+Its OM has independent read and write ports. Reads are combinational when
+enabled, and writes occur on the rising edge. Addresses and transfer counts
+use 16-bit words. DMA CSR offsets use bytes. The CONV1 image starts at
+`0x10000` and the weight tensor starts at `0x35000`.
+
+`MASTER_IMEM_FILE` and `SLAVE_IMEM_FILE` select the program images. Master
+records are 32-bit words and slave records are 64-bit words. The testbench
+passes the filenames to the DUT memory wrappers for preload.
+
+To regenerate the Caffe input image from `source`, run
+
+```powershell
+python new_sw/test_img/script/input_preprocess.py --input path/to/image.jpg --output new_hw/tb/single_system/om_mem/Conv1/input_img.mem
+```
 
 ## Execution and logs
 
 Clock period is 10 ns. Reset is held low for four clock periods, then the
-bench runs for `MAX_CYCLES` (currently 100000); edit that constant for your
-program's required duration. `single_system_result.log` records preload
+bare harness runs up to `MAX_CYCLES` (default 8500000). Each full-layer
+checker terminates after verifying the final OM output. `single_system_result.log` records preload
 ranges, DMA completion pulses, sticky slave completion's rising edge, and
 every OM write's time/address/data. Slave completion does not end the bench;
 the master can continue its remaining row transfers.
@@ -116,47 +258,12 @@ connects it to the master. `WAIT_ROW` (`.word 0x0000002b`, custom-1) stalls
 master fetch/decode until it consumes one live or remembered row event.
 Older master instructions finish during the wait. Reset or SCR clears the
 one pending event. Multiple unconsumed events coalesce. The DMA-only harness
-ties this input low because it has no slave.
+ties both slave completion inputs low.
 
-The master executes WAIT_ROW before buffer reuse and after the final row
-of each channel. The slave emits one matching marker after all vertical
-passes of each input row. DONE signals that the current channel has drained.
-The next SCR clears DONE and starts the next channel.
-ROW_DONE does not stop the slave or wait for incoming DMA data; the program
-must also ensure a new row is ready before the slave starts reading it.
-
-At the run limit, the bench writes `SINGLE_SYSTEM_TB_FINISHED` and calls
-`$finish`. The runner reports `FINISHED`. This means the configured simulation
-window ended without a fatal error; it does not assert program completion or
-workload correctness. Add workload-specific comparisons once your programs
-and expected results are available.
-
-From `source`, regenerate and check the RGB program:
-
-```powershell
-python new_sw/core_instruction/conv1_rgb21_program.py
-python new_sw/core_instruction/conv1_channel0_reference.py --channels 3 --output-rows 4 --output new_hw/tb/single_system/reference/conv1_rgb21_osp.mem
-python new_hw/script/run.py test=conv1_rgb21
-```
-
-The RGB checker verifies all 14080 OSP words, 63 row events and waits,
-255 DMA completions, and that each next-channel weight set is ready at SCR.
-The Verilator run passed at a final slave DONE time of 853.305 us.
-Logs are in `DSIP/tmp/verilator/conv1_rgb21/`.
-
-To check the earlier nine-output-row channel-0 workload:
-
-```powershell
-python new_sw/core_instruction/conv1_channel0_reference.py
-python new_hw/script/run.py test=conv1_channel0
-```
-
-The test checks all 31680 OSP words, 7744 prefetched KSP weights,
-41 row events and waits, and 169 DMA completions. Regenerate the OSP reference
-whenever the image or weights change. Logs are in
-`DSIP/tmp/verilator/conv1_channel0/`.
-
-From `source`, once compilation/simulation is approved:
+The generated programs use `WAIT_ROW` at the end of a loaded input row.
+Setup and output packing use `WAIT_DONE` (`.word 0x0000102b`), which waits
+for the slave to halt after the current run. Use `--wave` to capture a
+waveform and open GTKWave.
 
 ```powershell
 python new_hw/script/run.py test=single_system
@@ -177,7 +284,3 @@ program through DMA0 and checked `2.0 * 3.0 - 1.0 = 5.0` at OM[3072].
 A separate `DSIP/tmp/verilator/slave_imem_init_check/` run checked 64-bit
 preloading and partial 16-bit programming writes. Those runs predate this
 cleanup and do not verify the current file-driven harness.
-
-The OM parameter conversion was previously checked bit-for-bit against its
-source binaries. Both file-driven CONV1 regressions passed after the RGB
-program was installed.

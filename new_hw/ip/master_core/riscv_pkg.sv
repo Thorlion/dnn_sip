@@ -33,7 +33,7 @@ package riscv_pkg;
         OP_FENCE    = 7'b0001111,  // fence
         OP_DMA_CONFIG = 7'b1111000, // I-type DMA CSR write: offset = imm, data = rs1
         OP_SCR        = 7'b0001011, // Slave start: PC = forwarded rs1 (custom-0)
-        OP_WAIT_ROW   = 7'b0101011  // Consume one slave row-completion event (custom-1)
+        OP_WAIT_ROW   = 7'b0101011  // funct3 0 waits for ROW_DONE, 1 waits for DONE (custom-1)
     } opcode_t;
 
     // --- ALU OPERATIONS ---

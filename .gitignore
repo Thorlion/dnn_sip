@@ -1,3 +1,14 @@
 /software/img_rgb/
 /software/img_hex/
 /new_sw/test_img/raw_img/
+/new_sw/model/alexnet_q88/
+
+.venv/
+venv/
+env/
+
+__pycache__/
+*.pyc
+*.caffemodel
+*.proto
+*.prototxt

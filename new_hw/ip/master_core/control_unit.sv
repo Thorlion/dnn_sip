@@ -26,7 +26,8 @@ import riscv_pkg::*;
  * @param o_wen_dma0  Output: DMA0 CSR write enable (DMA_CONFIG funct3 = 0)
  * @param o_wen_dma1  Output: DMA1 CSR write enable (DMA_CONFIG funct3 = 1)
  * @param o_slave_start Output: SCR request, forwarded to EX through ID/EX
- * @param o_wait_row Output: WAIT_ROW request, held in ID until an event is available
+ * @param o_wait_row Output: WAIT_ROW request, held in ID until a row event is available
+ * @param o_wait_done Output: WAIT_DONE request, held in ID until the slave halts
  */
 module ControlUnit (
     input  opcode_t         opcode,
@@ -44,7 +45,8 @@ module ControlUnit (
     output logic            o_wen_dma0,
     output logic            o_wen_dma1,
     output logic            o_slave_start,
-    output logic            o_wait_row
+    output logic            o_wait_row,
+    output logic            o_wait_done
 );
     always_comb begin : ControlLogic
         // --- Default signal values to prevent latches ---
@@ -61,6 +63,7 @@ module ControlUnit (
         o_wen_dma1  = 1'b0;
         o_slave_start = 1'b0;
         o_wait_row = 1'b0;
+        o_wait_done = 1'b0;
 
         case (opcode)
             OP_R_TYPE: begin : RegisterArithmetic
@@ -180,7 +183,8 @@ module ControlUnit (
 
             OP_WAIT_ROW: begin
                 // No register or memory side effects; operand fields are unused.
-                o_wait_row = 1'b1;
+                o_wait_row = (funct3 == 3'b000);
+                o_wait_done = (funct3 == 3'b001);
             end
             
             default: begin : UnknownOpcode

@@ -39,6 +39,7 @@ import riscv_pkg::*;
  * @param o_wen_dma1      Control: DMA1 CSR Write Enable
  * @param o_slave_start   Control: SCR slave-start request
  * @param o_wait_row      Control: wait for one slave row-completion event
+ * @param o_wait_done     Control: wait for the slave to finish and halt
  */
 module ID_Stage (
     input  logic             clk,
@@ -69,11 +70,12 @@ module ID_Stage (
     output logic             o_wen_dma0,
     output logic             o_wen_dma1,
     output logic             o_slave_start,
-    output logic             o_wait_row
+    output logic             o_wait_row,
+    output logic             o_wait_done
 );
     // --- Instruction Field Decoding ---
     assign opcode = opcode_t'(instruction[6:0]);
-    // DMA_CONFIG and SCR consume only rs1; WAIT_ROW consumes no registers.
+    // DMA_CONFIG and SCR consume only rs1. Both slave waits consume no registers.
     // Unused fields must not create false register dependencies.
     assign rd     = ((opcode == OP_DMA_CONFIG) || (opcode == OP_SCR) ||
                      (opcode == OP_WAIT_ROW)) ?
@@ -101,7 +103,8 @@ module ID_Stage (
         .o_wen_dma0(o_wen_dma0),
         .o_wen_dma1(o_wen_dma1),
         .o_slave_start(o_slave_start),
-        .o_wait_row(o_wait_row)
+        .o_wait_row(o_wait_row),
+        .o_wait_done(o_wait_done)
     );
 
     RegFile reg_file_inst (

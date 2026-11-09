@@ -45,6 +45,7 @@ module master_dma_top #(
         .i_rst_n(i_rst_n),
         // No slave in this DMA-only harness; WAIT_ROW would wait indefinitely.
         .i_slave_row_done(1'b0),
+        .i_slave_done(1'b0),
         .o_dma_csr_data(w_dma_csr_data),
         .o_dma_csr_offset(w_dma_csr_offset),
         .o_wen_dma0(w_wen_dma0),
