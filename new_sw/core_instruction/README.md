@@ -1,5 +1,62 @@
 # Slave instruction exporter
 
+## Generate a convolution from dimensions
+
+`conv_program.py` compiles a convolution directly from JSON settings. For
+example, save the following as `layer.json`.
+
+```json
+{
+  "input_shape": [4, 5, 8],
+  "weight_shape": [130, 2, 2, 3],
+  "output_shape": [130, 4, 6],
+  "stride": [2, 2],
+  "padding": [2, 1, 3, 2],
+  "groups": 2,
+  "om": {"input": "0x10000", "weights": "0x35000", "zero": "0x3B000", "output": "0x40000"}
+}
+```
+
+Run this command from `source` to generate both programs and their entry map.
+
+```powershell
+python new_sw/core_instruction/conv_program.py layer.json --slave layer_slave.mem --master layer_master.mem --manifest layer_manifest.json
+```
+
+| Setting | Order and meaning |
+| --- | --- |
+| `input_shape` | `[channels, height, width]` in CHW order |
+| `weight_shape` | `[filters, input_channels_per_group, kernel_height, kernel_width]` in filter-major OIHW order |
+| `output_shape` | `[filters, height, width]`, optional. The compiler calculates it and checks any supplied shape. |
+| `stride` | A scalar or `[height, width]`. Defaults to 1. |
+| `padding` | A scalar, `[height, width]`, or `[top, bottom, left, right]`. Defaults to 0. |
+| `groups` | Defaults to 1. Each group uses contiguous input channels and filters. |
+| `om` | 16-bit word bases for the input, weights, a single zero word, and output. Required for `--master`. |
+
+Use only `--slave` to generate a slave image. The optional `--manifest`
+lists the derived geometry and SCR entry PCs for a custom master schedule.
+With both images, preload signed Q8.8 input and weights at the configured
+OM bases, plus `0000` at the zero base. Load the images into the master and
+slave IMEMs and start from reset. The example input and weight bases match
+`single_system_tb`. Set `IMAGE_WORDS`, `WEIGHT_WORDS`, `OM_DEPTH`, and the
+run limit for the workload. The master writes raw dot products to OM at
+`output + (y*output_width + x)*filters + filter`.
+
+The general schedule holds one output row per filter batch in OSP. It
+supports rectangular shapes, grouped layers, and partial 64-lane batches.
+Each input row must fit in IB (1,024 words), each kernel plane in KSP
+(256 words), and each output row in OSP (512 words per lane). Generated
+programs must also fit in the 512-word slave and 4,096-word master IMEMs.
+The compiler reports configurations that exceed these limits.
+
+For custom geometries, the master drains one batch of each pixel at a time
+from OB so it can place the filters in pixel-major order, and the slave
+waits for OSP writes to drain before issuing its next OSP read. The tuned
+`conv1_full_program.py` and `conv2_program.py` through `conv5_program.py`
+remain available for the AlexNet workloads.
+
+## Export a worksheet
+
 `core_compiler.py` reads the instruction worksheet and writes a 64-bit
 hexadecimal image for the slave IMEM's `$readmemh` loader. It requires Python
 3.10 or later and uses only the standard library.
@@ -18,7 +75,7 @@ paths are resolved from the working directory. Absolute paths are accepted.
 The script can also be run from `source`:
 
 ```powershell
-python new_sw/core_instruction/core_compiler.py -i new_sw/core_instruction/slave_instruction_template.xlsx -o new_hw/tb/single_system/slave_mem/single_slave_imem.mem
+python new_sw/core_instruction/core_compiler.py -i new_sw/core_instruction/slave_instruction_template.xlsx -o my_slave_imem.mem
 ```
 
 ## Worksheet inputs
@@ -114,7 +171,6 @@ instructions. Invalid inputs return exit code 2 without replacing an existing
 output file. Successful exports replace the output atomically. The source
 workbook is read only; using it as the output path is rejected.
 
-File initialization is independent of DMA programming. The single-system
-bench directly preloads `slave_mem/single_slave_imem.mem`; it does not
-overwrite that image with an embedded program. The current template retains
-the existing 22 instructions, with Done set on the final OSP store.
+Set the single-system bench's `SLAVE_IMEM_FILE` parameter to the exported
+image to preload it at simulation start. The current template retains the
+existing 22 instructions, with Done set on the final OSP store.
